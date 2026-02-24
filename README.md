@@ -77,6 +77,13 @@ npm run start
 
 `start` checks required tokens and prompts only if values are missing.
 
+## Startup troubleshooting
+
+- If `npm run start` fails, first read the error and follow the suggested action.
+- For Codex issues, run `codex login` and retry `npm run start`.
+- If `codex` is not found, install Codex CLI or set `CODEX_BIN` in your `.env`.
+- If you are still stuck, ask your favorite LLM with the exact error output.
+
 ## Commands
 
 ```bash
