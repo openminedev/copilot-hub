@@ -1,0 +1,21 @@
+{
+  "name": "@copilot-hub/control-plane",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Copilot Hub control plane",
+  "type": "module",
+  "scripts": {
+    "start": "node src/copilot-hub.js",
+    "dev": "node --watch src/copilot-hub.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@copilot-hub/contracts": "0.1.0",
+    "@copilot-hub/core": "0.1.0",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "grammy": "^1.38.3"
+  }
+}

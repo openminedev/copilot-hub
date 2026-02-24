@@ -1,0 +1,7 @@
+{
+  "name": "@copilot-hub/capabilities",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared capability manifests and reusable capability helpers"
+}

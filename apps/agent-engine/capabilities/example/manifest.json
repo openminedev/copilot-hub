@@ -1,0 +1,14 @@
+{
+  "id": "example-capability",
+  "name": "Example Capability",
+  "version": "1.0.0",
+  "entry": "./index.js",
+  "minKernelVersion": "1.0.0",
+  "timeoutMs": 3000,
+  "hooks": [
+    "onRuntimeStart",
+    "onTurnStart",
+    "onTurnResult"
+  ],
+  "permissions": []
+}

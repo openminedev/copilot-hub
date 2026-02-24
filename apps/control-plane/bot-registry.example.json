@@ -1,0 +1,40 @@
+{
+  "version": 3,
+  "agents": [
+    {
+      "id": "admin_agent",
+      "name": "Admin Agent",
+      "enabled": true,
+      "autoStart": true,
+      "dataDir": "./data/bots/admin_agent",
+      "threadMode": "single",
+      "sharedThreadId": "shared-admin",
+      "provider": {
+        "kind": "codex",
+        "options": {}
+      },
+      "kernelAccess": {
+        "enabled": true,
+        "allowedActions": [
+          "*"
+        ],
+        "allowedChatIds": []
+      },
+      "channels": [
+        {
+          "kind": "telegram",
+          "id": "telegram_admin",
+          "tokenEnv": "TELEGRAM_TOKEN_ADMIN"
+        }
+      ],
+      "capabilities": [
+        {
+          "id": "example",
+          "manifestPath": "./capabilities/example/manifest.json",
+          "enabled": true,
+          "options": {}
+        }
+      ]
+    }
+  ]
+}

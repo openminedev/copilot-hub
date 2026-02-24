@@ -1,0 +1,11 @@
+{
+  "name": "@copilot-hub/core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared core utilities for Copilot Hub",
+  "exports": {
+    ".": "./src/index.js",
+    "./workspace-policy": "./src/workspace-policy.js"
+  }
+}

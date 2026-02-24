@@ -1,0 +1,11 @@
+{
+  "name": "@copilot-hub/contracts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Versioned contracts between control-plane and agent-engine",
+  "exports": {
+    ".": "./src/index.js",
+    "./control-plane": "./src/control-plane.js"
+  }
+}

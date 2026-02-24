@@ -1,0 +1,41 @@
+{
+  "name": "control-plane.v1",
+  "version": "1.1.0",
+  "actions": [
+    "bots:list",
+    "bots:status",
+    "bots:start",
+    "bots:stop",
+    "bots:create",
+    "bots:delete",
+    "bots:set_policy",
+    "bots:set_project",
+    "bots:capabilities:list",
+    "bots:capabilities:reload",
+    "bots:capabilities:scaffold",
+    "projects:list",
+    "projects:create",
+    "secrets:list",
+    "secrets:set",
+    "secrets:delete",
+    "extensions:contract:get"
+  ],
+  "policyProfiles": {
+    "safe": {
+      "sandboxMode": "read-only",
+      "approvalPolicy": "on-request"
+    },
+    "standard": {
+      "sandboxMode": "workspace-write",
+      "approvalPolicy": "on-request"
+    },
+    "semi_auto": {
+      "sandboxMode": "workspace-write",
+      "approvalPolicy": "on-failure"
+    },
+    "full_auto": {
+      "sandboxMode": "danger-full-access",
+      "approvalPolicy": "never"
+    }
+  }
+}

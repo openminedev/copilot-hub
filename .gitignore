@@ -1,0 +1,12 @@
+# Monorepo-wide ignores
+**/node_modules/
+**/.env
+**/.env.*
+!**/.env.example
+**/data/
+**/*.log
+copilot_workspaces/
+.DS_Store
+Thumbs.db
+.copilot-hub/
+

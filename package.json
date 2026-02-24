@@ -1,0 +1,26 @@
+{
+  "name": "copilot-hub",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Copilot Hub monorepo",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "start": "node scripts/cli.mjs start",
+    "stop": "node scripts/cli.mjs stop",
+    "restart": "node scripts/cli.mjs restart",
+    "status": "node scripts/cli.mjs status",
+    "logs": "node scripts/cli.mjs logs",
+    "configure": "node scripts/cli.mjs configure",
+    "start:control-plane": "npm --prefix apps/control-plane run start",
+    "start:agent-engine": "npm --prefix apps/agent-engine run start",
+    "setup:agent-engine": "npm --prefix apps/agent-engine run setup",
+    "check:agent-engine": "node --check apps/agent-engine/src/index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
+

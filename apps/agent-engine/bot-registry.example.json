@@ -1,0 +1,28 @@
+{
+  "version": 3,
+  "agents": [
+    {
+      "id": "Agent_1",
+      "name": "Agent 1",
+      "enabled": true,
+      "autoStart": true,
+      "threadMode": "single",
+      "sharedThreadId": "shared-Agent_1",
+      "provider": {
+        "kind": "codex",
+        "options": {
+          "sandboxMode": "workspace-write",
+          "approvalPolicy": "on-failure"
+        }
+      },
+      "channels": [
+        {
+          "kind": "telegram",
+          "id": "telegram_Agent_1",
+          "tokenEnv": "TELEGRAM_TOKEN_AGENT_1"
+        }
+      ],
+      "capabilities": []
+    }
+  ]
+}

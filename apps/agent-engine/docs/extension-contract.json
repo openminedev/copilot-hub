@@ -1,0 +1,19 @@
+{
+  "contractVersion": "1.0.0",
+  "description": "Kernel capability extension contract",
+  "sourceOfTruth": "GET /api/extensions/contract",
+  "capability": {
+    "registryEntry": {
+      "required": ["id", "manifestPath"],
+      "optional": ["enabled", "options"]
+    },
+    "manifest": {
+      "required": ["id", "entry"],
+      "optional": ["name", "version", "hooks", "permissions", "minKernelVersion", "timeoutMs"]
+    },
+    "scaffold": {
+      "manifestPathPattern": "capabilities/<capabilityId>/manifest.json",
+      "entryPathPattern": "capabilities/<capabilityId>/index.js"
+    }
+  }
+}
