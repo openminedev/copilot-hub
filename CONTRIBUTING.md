@@ -16,7 +16,10 @@ Thanks for contributing to Copilot Hub.
 ## Dev flow
 
 1. Update code in the relevant app/package.
-2. Validate syntax locally.
+2. Run quality checks:
+   - `npm run test`
+   - `npm run lint`
+   - `npm run format:check`
 3. Run smoke checks for impacted app(s).
 4. Update docs if behavior changed.
 

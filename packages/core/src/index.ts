@@ -3,5 +3,5 @@ export {
   assertWorkspaceAllowed,
   isPathInside,
   normalizeAbsolutePath,
-  parseWorkspaceAllowedRoots
+  parseWorkspaceAllowedRoots,
 } from "./workspace-policy.js";

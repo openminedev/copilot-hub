@@ -50,7 +50,10 @@ async function main() {
 async function configureRequiredTokens({ rl, controlPlaneLines }) {
   const controlPlaneMap = parseEnvMap(controlPlaneLines);
 
-  const controlPlaneTokenEnvName = nonEmpty(controlPlaneMap.HUB_TELEGRAM_TOKEN_ENV, "HUB_TELEGRAM_TOKEN");
+  const controlPlaneTokenEnvName = nonEmpty(
+    controlPlaneMap.HUB_TELEGRAM_TOKEN_ENV,
+    "HUB_TELEGRAM_TOKEN",
+  );
   setEnvValue(controlPlaneLines, "HUB_TELEGRAM_TOKEN_ENV", controlPlaneTokenEnvName);
 
   const postControlPlaneMap = parseEnvMap(controlPlaneLines);
@@ -61,11 +64,16 @@ async function configureRequiredTokens({ rl, controlPlaneLines }) {
   }
 
   if (!process.stdin.isTTY) {
-    throw new Error("Missing required tokens and no interactive terminal. Run 'npm run configure'.");
+    throw new Error(
+      "Missing required tokens and no interactive terminal. Run 'npm run configure'.",
+    );
   }
 
   console.log("Missing required token. Please enter value:");
-  const value = await askRequired(rl, `Token value for ${controlPlaneTokenEnvName} (control-plane)`);
+  const value = await askRequired(
+    rl,
+    `Token value for ${controlPlaneTokenEnvName} (control-plane)`,
+  );
   setEnvValue(controlPlaneLines, controlPlaneTokenEnvName, value);
   console.log("Required token saved.");
 }
@@ -76,11 +84,22 @@ async function configureAll({ rl, engineLines, controlPlaneLines }) {
 
   console.log("\nCopilot Hub token configuration\n");
 
-  const controlPlaneTokenEnvDefault = nonEmpty(controlPlaneMap.HUB_TELEGRAM_TOKEN_ENV, "HUB_TELEGRAM_TOKEN");
-  const controlPlaneTokenEnvName = await ask(rl, "control-plane token variable", controlPlaneTokenEnvDefault);
+  const controlPlaneTokenEnvDefault = nonEmpty(
+    controlPlaneMap.HUB_TELEGRAM_TOKEN_ENV,
+    "HUB_TELEGRAM_TOKEN",
+  );
+  const controlPlaneTokenEnvName = await ask(
+    rl,
+    "control-plane token variable",
+    controlPlaneTokenEnvDefault,
+  );
   setEnvValue(controlPlaneLines, "HUB_TELEGRAM_TOKEN_ENV", controlPlaneTokenEnvName);
   const currentControlPlaneToken = parseEnvMap(controlPlaneLines)[controlPlaneTokenEnvName] ?? "";
-  const newControlPlaneToken = await ask(rl, `Token value for ${controlPlaneTokenEnvName} (control-plane, Enter to keep current)`, "");
+  const newControlPlaneToken = await ask(
+    rl,
+    `Token value for ${controlPlaneTokenEnvName} (control-plane, Enter to keep current)`,
+    "",
+  );
   if (newControlPlaneToken) {
     setEnvValue(controlPlaneLines, controlPlaneTokenEnvName, newControlPlaneToken);
   } else if (!currentControlPlaneToken) {
@@ -90,7 +109,11 @@ async function configureAll({ rl, engineLines, controlPlaneLines }) {
   const configureAgentToken = await askYesNo(rl, "Configure TELEGRAM_TOKEN_AGENT_1 now?", true);
   if (configureAgentToken) {
     const currentAgentToken = engineMap.TELEGRAM_TOKEN_AGENT_1 ?? "";
-    const newAgentToken = await ask(rl, "Token value for TELEGRAM_TOKEN_AGENT_1 (agent-engine, Enter to keep current)", "");
+    const newAgentToken = await ask(
+      rl,
+      "Token value for TELEGRAM_TOKEN_AGENT_1 (agent-engine, Enter to keep current)",
+      "",
+    );
     if (newAgentToken) {
       setEnvValue(engineLines, "TELEGRAM_TOKEN_AGENT_1", newAgentToken);
     } else if (!currentAgentToken) {
@@ -160,7 +183,9 @@ function setEnvValue(lines, key, value) {
 }
 
 function sanitizeValue(value) {
-  return String(value ?? "").replace(/[\r\n]/g, "").trim();
+  return String(value ?? "")
+    .replace(/[\r\n]/g, "")
+    .trim();
 }
 
 function unquote(value) {
@@ -208,7 +233,9 @@ async function askRequired(rl, label) {
 async function askYesNo(rl, label, defaultYes) {
   const suffix = defaultYes ? "[Y/n]" : "[y/N]";
   const answer = await rl.question(`${label} ${suffix}: `);
-  const value = String(answer ?? "").trim().toLowerCase();
+  const value = String(answer ?? "")
+    .trim()
+    .toLowerCase();
   if (!value) {
     return defaultYes;
   }

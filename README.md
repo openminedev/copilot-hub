@@ -8,6 +8,7 @@ Copilot Hub is a 2-plane monorepo for building and operating Telegram AI agents.
 - `apps/agent-engine`: execution plane (workers, channels, sessions, capabilities).
 
 Shared packages:
+
 - `packages/contracts`
 - `packages/core`
 - `packages/capabilities`
@@ -31,6 +32,7 @@ flowchart LR
 ```
 
 Why this matters:
+
 - multiple chats can run at the same time without mixing files
 - multiple projects can run in parallel on the same machine
 - one agent change stays inside that agent workspace
@@ -94,6 +96,9 @@ npm run restart
 npm run status
 npm run logs
 npm run configure
+npm run test
+npm run lint
+npm run format:check
 ```
 
 ## Workspace policy

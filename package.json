@@ -8,19 +8,31 @@
     "packages/*"
   ],
   "scripts": {
-    "start": "node scripts/cli.mjs start",
+    "build": "npm run build --workspaces --if-present",
+    "start": "npm run build && node scripts/cli.mjs start",
     "stop": "node scripts/cli.mjs stop",
     "restart": "node scripts/cli.mjs restart",
     "status": "node scripts/cli.mjs status",
     "logs": "node scripts/cli.mjs logs",
     "configure": "node scripts/cli.mjs configure",
-    "start:control-plane": "npm --prefix apps/control-plane run start",
-    "start:agent-engine": "npm --prefix apps/agent-engine run start",
+    "test": "npm run test --workspaces --if-present",
+    "lint": "eslint .",
+    "format": "prettier --write \"{scripts,packages}/**/*.{js,mjs,ts,json}\" \"{README.md,CONTRIBUTING.md,ARCHITECTURE.md}\" \"eslint.config.mjs\" \"package.json\" \"tsconfig.base.json\"",
+    "format:check": "prettier --check \"{scripts,packages}/**/*.{js,mjs,ts,json}\" \"{README.md,CONTRIBUTING.md,ARCHITECTURE.md}\" \"eslint.config.mjs\" \"package.json\" \"tsconfig.base.json\"",
+    "start:control-plane": "npm run build && npm --prefix apps/control-plane run start",
+    "start:agent-engine": "npm run build && npm --prefix apps/agent-engine run start",
     "setup:agent-engine": "npm --prefix apps/agent-engine run setup",
     "check:agent-engine": "node --check apps/agent-engine/src/index.js"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.22.0",
+    "@types/node": "^22.13.10",
+    "eslint": "^9.22.0",
+    "globals": "^16.0.0",
+    "prettier": "^3.5.3",
+    "typescript": "^5.8.2"
   },
   "engines": {
     "node": ">=20"
   }
 }
-

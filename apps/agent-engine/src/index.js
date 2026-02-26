@@ -337,7 +337,7 @@ function buildApiApp({ botManager, controlPlane, registryFilePath }) {
   );
 
 
-  app.use((error, req, res, next) => {
+  app.use((error, req, res, _next) => {
     const message = sanitizeError(error);
     res.status(400).json({ error: message });
   });

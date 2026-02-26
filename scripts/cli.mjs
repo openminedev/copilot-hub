@@ -15,7 +15,9 @@ const controlPlaneEnvPath = path.join(repoRoot, "apps", "control-plane", ".env")
 const codexNpmPackage = "@openai/codex";
 const codexInstallCommand = `npm install -g ${codexNpmPackage}`;
 
-const action = String(process.argv[2] ?? "start").trim().toLowerCase();
+const action = String(process.argv[2] ?? "start")
+  .trim()
+  .toLowerCase();
 
 await main();
 
@@ -58,7 +60,7 @@ function runNode(scriptArgs) {
   const result = spawnSync(nodeBin, scriptArgs, {
     cwd: repoRoot,
     stdio: "inherit",
-    shell: false
+    shell: false,
   });
 
   const code = Number.isInteger(result.status) ? result.status : 1;
@@ -79,7 +81,7 @@ async function ensureCodexLogin() {
   if (status.errorCode === "ENOENT") {
     codexBin = await recoverCodexBinary({
       resolved,
-      status
+      status,
     });
 
     status = runCodex(codexBin, ["login", "status"], "pipe");
@@ -95,10 +97,10 @@ async function ensureCodexLogin() {
       [
         "Codex login is required and this terminal is non-interactive.",
         `Run '${codexBin} login' once, then retry 'npm run start'.`,
-        reason ? `Details: ${firstLine(reason)}` : ""
+        reason ? `Details: ${firstLine(reason)}` : "",
       ]
         .filter(Boolean)
-        .join("\n")
+        .join("\n"),
     );
   }
 
@@ -122,10 +124,13 @@ async function ensureCodexLogin() {
     throw new Error(
       [
         `Codex login failed for '${codexBin}'.`,
-        login.errorMessage || firstLine(login.stderr) || firstLine(login.stdout) || "Unknown error."
+        login.errorMessage ||
+          firstLine(login.stderr) ||
+          firstLine(login.stdout) ||
+          "Unknown error.",
       ]
         .filter(Boolean)
-        .join("\n")
+        .join("\n"),
     );
   }
 
@@ -134,10 +139,13 @@ async function ensureCodexLogin() {
     throw new Error(
       [
         "Codex login still not detected after login flow.",
-        verify.errorMessage || firstLine(verify.stderr) || firstLine(verify.stdout) || "Unknown error."
+        verify.errorMessage ||
+          firstLine(verify.stderr) ||
+          firstLine(verify.stdout) ||
+          "Unknown error.",
       ]
         .filter(Boolean)
-        .join("\n")
+        .join("\n"),
     );
   }
 
@@ -162,10 +170,10 @@ async function recoverCodexBinary({ resolved, status }) {
     throw new Error(
       [
         status.errorMessage || `Codex binary '${resolved.bin}' was not found.`,
-        `Install Codex CLI with '${codexInstallCommand}' or set CODEX_BIN, then retry 'npm run start'.`
+        `Install Codex CLI with '${codexInstallCommand}' or set CODEX_BIN, then retry 'npm run start'.`,
       ]
         .filter(Boolean)
-        .join("\n")
+        .join("\n"),
     );
   }
 
@@ -187,10 +195,13 @@ async function recoverCodexBinary({ resolved, status }) {
     throw new Error(
       [
         "Codex CLI installation failed.",
-        install.errorMessage || firstLine(install.stderr) || firstLine(install.stdout) || "Unknown error."
+        install.errorMessage ||
+          firstLine(install.stderr) ||
+          firstLine(install.stdout) ||
+          "Unknown error.",
       ]
         .filter(Boolean)
-        .join("\n")
+        .join("\n"),
     );
   }
 
@@ -199,8 +210,8 @@ async function recoverCodexBinary({ resolved, status }) {
     throw new Error(
       [
         "Codex CLI appears installed, but no runnable 'codex' binary was detected.",
-        "Set CODEX_BIN to the full Codex executable path, then retry 'npm run start'."
-      ].join("\n")
+        "Set CODEX_BIN to the full Codex executable path, then retry 'npm run start'.",
+      ].join("\n"),
     );
   }
 
@@ -214,7 +225,7 @@ function runCodex(codexBin, args, stdioMode) {
     cwd: repoRoot,
     stdio,
     shell: false,
-    encoding: "utf8"
+    encoding: "utf8",
   });
 
   if (result.error) {
@@ -223,7 +234,7 @@ function runCodex(codexBin, args, stdioMode) {
       stdout: "",
       stderr: "",
       errorMessage: formatCodexSpawnError(codexBin, result.error),
-      errorCode: normalizeErrorCode(result.error)
+      errorCode: normalizeErrorCode(result.error),
     };
   }
 
@@ -233,7 +244,7 @@ function runCodex(codexBin, args, stdioMode) {
     stdout: String(result.stdout ?? "").trim(),
     stderr: String(result.stderr ?? "").trim(),
     errorMessage: "",
-    errorCode: ""
+    errorCode: "",
   };
 }
 
@@ -243,20 +254,20 @@ function resolveCodexBinForStart() {
     return {
       bin: fromEnv,
       source: "process_env",
-      userConfigured: true
+      userConfigured: true,
     };
   }
 
   for (const [source, envPath] of [
     ["agent_env", agentEngineEnvPath],
-    ["control_plane_env", controlPlaneEnvPath]
+    ["control_plane_env", controlPlaneEnvPath],
   ]) {
     const value = readEnvValue(envPath, "CODEX_BIN");
     if (value) {
       return {
         bin: value,
         source,
-        userConfigured: true
+        userConfigured: true,
       };
     }
   }
@@ -266,25 +277,22 @@ function resolveCodexBinForStart() {
     return {
       bin: detected,
       source: "detected",
-      userConfigured: false
+      userConfigured: false,
     };
   }
 
   return {
     bin: "codex",
     source: "default",
-    userConfigured: false
+    userConfigured: false,
   };
 }
 
 function resolveInstalledCodexBin() {
   const candidates = dedupe(
-    [
-      "codex",
-      findDetectedCodexBin(),
-      findWindowsNpmGlobalCodexBin(),
-      findVscodeCodexExe()
-    ].filter(Boolean)
+    ["codex", findDetectedCodexBin(), findWindowsNpmGlobalCodexBin(), findVscodeCodexExe()].filter(
+      Boolean,
+    ),
   );
 
   for (const candidate of candidates) {
@@ -368,7 +376,7 @@ function readNpmPrefix() {
     cwd: repoRoot,
     stdio: ["ignore", "pipe", "pipe"],
     shell: false,
-    encoding: "utf8"
+    encoding: "utf8",
   });
   if (result.error || result.status !== 0) {
     return "";
@@ -387,7 +395,7 @@ function runNpm(args, stdioMode) {
     cwd: repoRoot,
     stdio,
     shell: false,
-    encoding: "utf8"
+    encoding: "utf8",
   });
 
   if (result.error) {
@@ -396,7 +404,7 @@ function runNpm(args, stdioMode) {
       stdout: "",
       stderr: "",
       errorMessage: formatNpmSpawnError(result.error),
-      errorCode: normalizeErrorCode(result.error)
+      errorCode: normalizeErrorCode(result.error),
     };
   }
 
@@ -406,7 +414,7 @@ function runNpm(args, stdioMode) {
     stdout: String(result.stdout ?? "").trim(),
     stderr: String(result.stderr ?? "").trim(),
     errorMessage: "",
-    errorCode: ""
+    errorCode: "",
   };
 }
 
@@ -441,7 +449,9 @@ function unquote(value) {
 async function askYesNo(rl, label, defaultYes) {
   const suffix = defaultYes ? "[Y/n]" : "[y/N]";
   const answer = await rl.question(`${label} ${suffix}: `);
-  const value = String(answer ?? "").trim().toLowerCase();
+  const value = String(answer ?? "")
+    .trim()
+    .toLowerCase();
   if (!value) {
     return defaultYes;
   }
@@ -497,7 +507,9 @@ function formatNpmSpawnError(error) {
 }
 
 function normalizeErrorCode(error) {
-  return String(error?.code ?? "").trim().toUpperCase();
+  return String(error?.code ?? "")
+    .trim()
+    .toUpperCase();
 }
 
 function dedupe(values) {

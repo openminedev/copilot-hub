@@ -1,0 +1,7 @@
+node_modules
+.git
+.copilot-hub
+logs
+**/data
+**/*.log
+package-lock.json

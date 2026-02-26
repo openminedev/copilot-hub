@@ -1,7 +1,40 @@
 import os from "node:os";
 import path from "node:path";
 
-export function parseWorkspaceAllowedRoots(rawValue, { cwd = process.cwd() } = {}) {
+export interface ParseWorkspaceAllowedRootsOptions {
+  cwd?: string;
+}
+
+export interface CreateWorkspaceBoundaryPolicyOptions {
+  kernelRootPath: string;
+  defaultWorkspaceRoot: string;
+  projectsBaseDir: string;
+  strictMode?: boolean;
+  additionalAllowedRoots?: readonly string[];
+}
+
+export interface WorkspaceBoundaryPolicy {
+  strictMode: boolean;
+  kernelRootPath: string;
+  defaultWorkspaceRoot: string;
+  projectsBaseDir: string;
+  allowedRoots: string[];
+}
+
+export interface AssertWorkspaceAllowedOptions {
+  workspaceRoot: string;
+  policy?: WorkspaceBoundaryPolicy | null;
+  label?: string;
+}
+
+export interface IsPathInsideOptions {
+  includeEqual?: boolean;
+}
+
+export function parseWorkspaceAllowedRoots(
+  rawValue: string,
+  { cwd = process.cwd() }: ParseWorkspaceAllowedRootsOptions = {},
+): string[] {
   const values = String(rawValue ?? "")
     .split(",")
     .map((entry) => String(entry ?? "").trim())
@@ -16,8 +49,8 @@ export function createWorkspaceBoundaryPolicy({
   defaultWorkspaceRoot,
   projectsBaseDir,
   strictMode = true,
-  additionalAllowedRoots = []
-}) {
+  additionalAllowedRoots = [],
+}: CreateWorkspaceBoundaryPolicyOptions): WorkspaceBoundaryPolicy {
   const kernelRoot = normalizeAbsolutePath(kernelRootPath);
   const defaultRoot = normalizeAbsolutePath(defaultWorkspaceRoot);
   const projectsRoot = normalizeAbsolutePath(projectsBaseDir);
@@ -25,7 +58,7 @@ export function createWorkspaceBoundaryPolicy({
   const allowedRoots = uniqueNormalizedPaths([
     defaultRoot,
     projectsRoot,
-    ...(Array.isArray(additionalAllowedRoots) ? additionalAllowedRoots : [])
+    ...(Array.isArray(additionalAllowedRoots) ? additionalAllowedRoots : []),
   ]);
 
   return {
@@ -33,11 +66,15 @@ export function createWorkspaceBoundaryPolicy({
     kernelRootPath: kernelRoot,
     defaultWorkspaceRoot: defaultRoot,
     projectsBaseDir: projectsRoot,
-    allowedRoots
+    allowedRoots,
   };
 }
 
-export function assertWorkspaceAllowed({ workspaceRoot, policy, label = "workspaceRoot" }) {
+export function assertWorkspaceAllowed({
+  workspaceRoot,
+  policy,
+  label = "workspaceRoot",
+}: AssertWorkspaceAllowedOptions): string {
   if (!policy || typeof policy !== "object") {
     return normalizeAbsolutePath(workspaceRoot);
   }
@@ -45,7 +82,7 @@ export function assertWorkspaceAllowed({ workspaceRoot, policy, label = "workspa
   const candidate = normalizeAbsolutePath(workspaceRoot);
   if (isPathInside(policy.kernelRootPath, candidate, { includeEqual: true })) {
     throw new Error(
-      `${label} must be outside kernel directory. kernel=${policy.kernelRootPath} workspace=${candidate}`
+      `${label} must be outside kernel directory. kernel=${policy.kernelRootPath} workspace=${candidate}`,
     );
   }
 
@@ -54,16 +91,24 @@ export function assertWorkspaceAllowed({ workspaceRoot, policy, label = "workspa
   }
 
   const allowedRoots = Array.isArray(policy.allowedRoots) ? policy.allowedRoots : [];
-  const accepted = allowedRoots.some((root) => isPathInside(root, candidate, { includeEqual: true }));
+  const accepted = allowedRoots.some((root) =>
+    isPathInside(root, candidate, { includeEqual: true }),
+  );
   if (!accepted) {
     const allowedText = allowedRoots.length > 0 ? allowedRoots.join(", ") : "<none>";
-    throw new Error(`${label} is outside allowed workspace roots. workspace=${candidate} allowed=${allowedText}`);
+    throw new Error(
+      `${label} is outside allowed workspace roots. workspace=${candidate} allowed=${allowedText}`,
+    );
   }
 
   return candidate;
 }
 
-export function isPathInside(parentPath, candidatePath, { includeEqual = false } = {}) {
+export function isPathInside(
+  parentPath: string,
+  candidatePath: string,
+  { includeEqual = false }: IsPathInsideOptions = {},
+): boolean {
   const parent = normalizeForCompare(path.resolve(String(parentPath ?? "")));
   const candidate = normalizeForCompare(path.resolve(String(candidatePath ?? "")));
   if (!parent || !candidate) {
@@ -78,7 +123,7 @@ export function isPathInside(parentPath, candidatePath, { includeEqual = false }
   return Boolean(relative) && !relative.startsWith("..") && !path.isAbsolute(relative);
 }
 
-export function normalizeAbsolutePath(value) {
+export function normalizeAbsolutePath(value: string): string {
   const raw = String(value ?? "").trim();
   if (!raw) {
     throw new Error("Path cannot be empty.");
@@ -86,7 +131,7 @@ export function normalizeAbsolutePath(value) {
   return path.resolve(raw);
 }
 
-function normalizeForCompare(value) {
+function normalizeForCompare(value: string): string {
   const normalized = String(value ?? "").trim();
   if (!normalized) {
     return "";
@@ -94,7 +139,7 @@ function normalizeForCompare(value) {
   return process.platform === "win32" ? normalized.toLowerCase() : normalized;
 }
 
-function resolvePathToken(rawToken, cwd) {
+function resolvePathToken(rawToken: string, cwd: string): string {
   const token = String(rawToken ?? "").trim();
   if (!token) {
     return "";
@@ -111,9 +156,9 @@ function resolvePathToken(rawToken, cwd) {
   return path.resolve(String(cwd ?? process.cwd()), token);
 }
 
-function uniqueNormalizedPaths(values) {
-  const seen = new Set();
-  const output = [];
+function uniqueNormalizedPaths(values: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const output: string[] = [];
 
   for (const value of values) {
     const raw = String(value ?? "").trim();

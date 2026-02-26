@@ -18,21 +18,23 @@ const SERVICES = [
     id: "agent-engine",
     workingDir: path.join(repoRoot, "apps", "agent-engine"),
     entryScript: "src/index.js",
-    logFile: path.join(logsDir, "agent-engine.log")
+    logFile: path.join(logsDir, "agent-engine.log"),
   },
 
   {
     id: "control-plane",
     workingDir: path.join(repoRoot, "apps", "control-plane"),
     entryScript: "src/copilot-hub.js",
-    logFile: path.join(logsDir, "control-plane.log")
-  }
+    logFile: path.join(logsDir, "control-plane.log"),
+  },
 ].map((service) => ({
   ...service,
-  pidFile: path.join(pidsDir, `${service.id}.json`)
+  pidFile: path.join(pidsDir, `${service.id}.json`),
 }));
 
-const action = String(process.argv[2] ?? "up").trim().toLowerCase();
+const action = String(process.argv[2] ?? "up")
+  .trim()
+  .toLowerCase();
 
 await main();
 
@@ -134,7 +136,7 @@ async function startService(service) {
       stdio: ["ignore", logFd, logFd],
       windowsHide: true,
       shell: false,
-      env: process.env
+      env: process.env,
     });
   } finally {
     fs.closeSync(logFd);
@@ -151,7 +153,7 @@ async function startService(service) {
   writeState(service, {
     pid,
     startedAt: new Date().toISOString(),
-    command: `${process.execPath} ${service.entryScript}`
+    command: `${process.execPath} ${service.entryScript}`,
   });
 
   await sleep(250);
@@ -216,7 +218,7 @@ function killTreeWindows(pid) {
     const child = spawn("taskkill", ["/PID", String(pid), "/T", "/F"], {
       stdio: "ignore",
       shell: false,
-      windowsHide: true
+      windowsHide: true,
     });
 
     child.once("error", () => resolve());
@@ -328,4 +330,3 @@ function sleep(ms) {
 function printUsage() {
   console.log("Usage: node scripts/supervisor.mjs <up|down|restart|status|logs>");
 }
-

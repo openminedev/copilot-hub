@@ -15,27 +15,29 @@ export const CONTROL_ACTIONS = Object.freeze({
   SECRETS_LIST: "secrets:list",
   SECRETS_SET: "secrets:set",
   SECRETS_DELETE: "secrets:delete",
-  EXTENSIONS_CONTRACT_GET: "extensions:contract:get"
-});
+  EXTENSIONS_CONTRACT_GET: "extensions:contract:get",
+} as const);
 
-const CONTROL_ACTION_SET = new Set(Object.values(CONTROL_ACTIONS));
+export type ControlAction = (typeof CONTROL_ACTIONS)[keyof typeof CONTROL_ACTIONS];
 
-export function normalizeControlAction(value) {
+const CONTROL_ACTION_SET = new Set<ControlAction>(Object.values(CONTROL_ACTIONS));
+
+export function normalizeControlAction(value: unknown): string {
   return String(value ?? "")
     .trim()
     .toLowerCase();
 }
 
-export function isControlAction(value) {
-  return CONTROL_ACTION_SET.has(normalizeControlAction(value));
+export function isControlAction(value: unknown): value is ControlAction {
+  return CONTROL_ACTION_SET.has(normalizeControlAction(value) as ControlAction);
 }
 
-export function requireControlAction(value) {
+export function requireControlAction(value: unknown): ControlAction {
   const action = normalizeControlAction(value);
-  if (!CONTROL_ACTION_SET.has(action)) {
+  if (!CONTROL_ACTION_SET.has(action as ControlAction)) {
     throw new Error(`Unsupported control action '${action || "<empty>"}'.`);
   }
-  return action;
+  return action as ControlAction;
 }
 
-export const CONTROL_ACTION_LIST = Object.freeze([...CONTROL_ACTION_SET]);
+export const CONTROL_ACTION_LIST = Object.freeze([...CONTROL_ACTION_SET] as ControlAction[]);

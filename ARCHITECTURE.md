@@ -3,10 +3,12 @@
 ## Planes
 
 1. Hub plane (`apps/control-plane`)
+
 - Single Telegram chat for operations commands and LLM development.
 - Handles simple ops commands and forwards non-command requests to the LLM runtime.
 
 2. Execution plane (`apps/agent-engine`)
+
 - Runs worker agents and channels.
 - Manages sessions, policies, capabilities, and projects.
 - Exposes runtime HTTP API.
@@ -35,6 +37,7 @@ flowchart LR
 ```
 
 Result:
+
 - many chats can run in parallel
 - many projects can run in parallel
 - file/state collisions between agents are avoided by design

@@ -4,8 +4,24 @@
   "private": true,
   "type": "module",
   "description": "Versioned contracts between control-plane and agent-engine",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test \"test/**/*.test.js\""
+  },
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./src/index.js",
-    "./control-plane": "./src/control-plane.js"
-  }
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./control-plane": {
+      "types": "./dist/control-plane.d.ts",
+      "import": "./dist/control-plane.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "control-plane.v1.json"
+  ]
 }

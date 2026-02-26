@@ -9,4 +9,5 @@ copilot_workspaces/
 .DS_Store
 Thumbs.db
 .copilot-hub/
+packages/*/dist/
 
