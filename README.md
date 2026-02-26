@@ -80,8 +80,9 @@ npm run start
 ## Startup troubleshooting
 
 - If `npm run start` fails, first read the error and follow the suggested action.
-- For Codex issues, run `codex login` and retry `npm run start`.
-- If `codex` is not found, install Codex CLI or set `CODEX_BIN` in your `.env`.
+- `npm run start` now auto-detects Codex from VS Code (Windows) and can install Codex CLI automatically if missing.
+- For Codex login issues, run `codex login` (or the configured `CODEX_BIN`) and retry `npm run start`.
+- If auto-install is skipped or unavailable, install Codex CLI with `npm install -g @openai/codex` or set `CODEX_BIN` in `.env`.
 - If you are still stuck, ask your favorite LLM with the exact error output.
 
 ## Commands

@@ -360,10 +360,17 @@ export class AgentSupervisor {
         AGENT_WEB_PUBLIC_BASE_URL: this.webPublicBaseUrl,
         AGENT_KERNEL_REQUEST_TIMEOUT_MS: String(REQUEST_TIMEOUT_MS)
       },
-      stdio: ["inherit", "inherit", "inherit", "ipc"]
+      stdio: ["ignore", "pipe", "pipe", "ipc"],
+      windowsHide: true
     });
 
     this.child = child;
+    child.stdout?.on("data", (chunk) => {
+      process.stdout.write(chunk);
+    });
+    child.stderr?.on("data", (chunk) => {
+      process.stderr.write(chunk);
+    });
 
     child.on("message", (message) => {
       this.#handleWorkerMessage(message);

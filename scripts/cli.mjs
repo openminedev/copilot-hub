@@ -12,6 +12,8 @@ const repoRoot = path.resolve(__dirname, "..");
 const nodeBin = process.execPath;
 const agentEngineEnvPath = path.join(repoRoot, "apps", "agent-engine", ".env");
 const controlPlaneEnvPath = path.join(repoRoot, "apps", "control-plane", ".env");
+const codexNpmPackage = "@openai/codex";
+const codexInstallCommand = `npm install -g ${codexNpmPackage}`;
 
 const action = String(process.argv[2] ?? "start").trim().toLowerCase();
 
@@ -66,11 +68,25 @@ function runNode(scriptArgs) {
 }
 
 async function ensureCodexLogin() {
-  const codexBin = resolveCodexBinForStart();
-  const status = runCodex(codexBin, ["login", "status"], "pipe");
+  const resolved = resolveCodexBinForStart();
+  let codexBin = resolved.bin;
+  let status = runCodex(codexBin, ["login", "status"], "pipe");
   if (status.ok) {
     console.log("Codex login already configured.");
     return;
+  }
+
+  if (status.errorCode === "ENOENT") {
+    codexBin = await recoverCodexBinary({
+      resolved,
+      status
+    });
+
+    status = runCodex(codexBin, ["login", "status"], "pipe");
+    if (status.ok) {
+      console.log("Codex login already configured.");
+      return;
+    }
   }
 
   const reason = status.errorMessage || status.stderr || status.stdout;
@@ -128,6 +144,70 @@ async function ensureCodexLogin() {
   console.log("Codex login configured.");
 }
 
+async function recoverCodexBinary({ resolved, status }) {
+  const detected = findDetectedCodexBin();
+  if (detected && detected !== resolved.bin) {
+    const probe = runCodex(detected, ["--version"], "pipe");
+    if (probe.ok) {
+      console.log(`Detected Codex binary: ${detected}`);
+      return detected;
+    }
+  }
+
+  if (resolved.userConfigured) {
+    return resolved.bin;
+  }
+
+  if (!process.stdin.isTTY) {
+    throw new Error(
+      [
+        status.errorMessage || `Codex binary '${resolved.bin}' was not found.`,
+        `Install Codex CLI with '${codexInstallCommand}' or set CODEX_BIN, then retry 'npm run start'.`
+      ]
+        .filter(Boolean)
+        .join("\n")
+    );
+  }
+
+  console.log("Codex CLI was not found on this machine.");
+  const rl = createInterface({ input, output });
+  let installNow = false;
+  try {
+    installNow = await askYesNo(rl, `Install Codex CLI now (${codexInstallCommand})?`, true);
+  } finally {
+    rl.close();
+  }
+
+  if (!installNow) {
+    throw new Error("Codex CLI is required before starting services.");
+  }
+
+  const install = runNpm(["install", "-g", codexNpmPackage], "inherit");
+  if (!install.ok) {
+    throw new Error(
+      [
+        "Codex CLI installation failed.",
+        install.errorMessage || firstLine(install.stderr) || firstLine(install.stdout) || "Unknown error."
+      ]
+        .filter(Boolean)
+        .join("\n")
+    );
+  }
+
+  const installed = resolveInstalledCodexBin();
+  if (!installed) {
+    throw new Error(
+      [
+        "Codex CLI appears installed, but no runnable 'codex' binary was detected.",
+        "Set CODEX_BIN to the full Codex executable path, then retry 'npm run start'."
+      ].join("\n")
+    );
+  }
+
+  console.log(`Codex CLI installed. Using '${installed}'.`);
+  return installed;
+}
+
 function runCodex(codexBin, args, stdioMode) {
   const stdio = stdioMode === "inherit" ? "inherit" : ["ignore", "pipe", "pipe"];
   const result = spawnSync(codexBin, args, {
@@ -142,7 +222,8 @@ function runCodex(codexBin, args, stdioMode) {
       ok: false,
       stdout: "",
       stderr: "",
-      errorMessage: formatCodexSpawnError(codexBin, result.error)
+      errorMessage: formatCodexSpawnError(codexBin, result.error),
+      errorCode: normalizeErrorCode(result.error)
     };
   }
 
@@ -151,24 +232,182 @@ function runCodex(codexBin, args, stdioMode) {
     ok: code === 0,
     stdout: String(result.stdout ?? "").trim(),
     stderr: String(result.stderr ?? "").trim(),
-    errorMessage: ""
+    errorMessage: "",
+    errorCode: ""
   };
 }
 
 function resolveCodexBinForStart() {
   const fromEnv = nonEmpty(process.env.CODEX_BIN);
   if (fromEnv) {
-    return fromEnv;
+    return {
+      bin: fromEnv,
+      source: "process_env",
+      userConfigured: true
+    };
   }
 
-  for (const envPath of [agentEngineEnvPath, controlPlaneEnvPath]) {
+  for (const [source, envPath] of [
+    ["agent_env", agentEngineEnvPath],
+    ["control_plane_env", controlPlaneEnvPath]
+  ]) {
     const value = readEnvValue(envPath, "CODEX_BIN");
     if (value) {
-      return value;
+      return {
+        bin: value,
+        source,
+        userConfigured: true
+      };
     }
   }
 
-  return "codex";
+  const detected = findDetectedCodexBin();
+  if (detected) {
+    return {
+      bin: detected,
+      source: "detected",
+      userConfigured: false
+    };
+  }
+
+  return {
+    bin: "codex",
+    source: "default",
+    userConfigured: false
+  };
+}
+
+function resolveInstalledCodexBin() {
+  const candidates = dedupe(
+    [
+      "codex",
+      findDetectedCodexBin(),
+      findWindowsNpmGlobalCodexBin(),
+      findVscodeCodexExe()
+    ].filter(Boolean)
+  );
+
+  for (const candidate of candidates) {
+    const status = runCodex(candidate, ["--version"], "pipe");
+    if (status.ok) {
+      return candidate;
+    }
+  }
+
+  return "";
+}
+
+function findDetectedCodexBin() {
+  if (process.platform !== "win32") {
+    return "";
+  }
+
+  return findVscodeCodexExe() || findWindowsNpmGlobalCodexBin() || "";
+}
+
+function findVscodeCodexExe() {
+  const userProfile = nonEmpty(process.env.USERPROFILE);
+  if (!userProfile) {
+    return "";
+  }
+
+  const extensionsDir = path.join(userProfile, ".vscode", "extensions");
+  if (!fs.existsSync(extensionsDir)) {
+    return "";
+  }
+
+  const candidates = fs
+    .readdirSync(extensionsDir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .filter((name) => name.startsWith("openai.chatgpt-"))
+    .sort()
+    .reverse();
+
+  for (const folder of candidates) {
+    const exePath = path.join(extensionsDir, folder, "bin", "windows-x86_64", "codex.exe");
+    if (fs.existsSync(exePath)) {
+      return exePath;
+    }
+  }
+
+  return "";
+}
+
+function findWindowsNpmGlobalCodexBin() {
+  if (process.platform !== "win32") {
+    return "";
+  }
+
+  const candidates = [];
+  const appData = nonEmpty(process.env.APPDATA);
+  if (appData) {
+    candidates.push(path.join(appData, "npm", "codex.cmd"));
+    candidates.push(path.join(appData, "npm", "codex.exe"));
+    candidates.push(path.join(appData, "npm", "codex"));
+  }
+
+  const npmPrefix = readNpmPrefix();
+  if (npmPrefix) {
+    candidates.push(path.join(npmPrefix, "codex.cmd"));
+    candidates.push(path.join(npmPrefix, "codex.exe"));
+    candidates.push(path.join(npmPrefix, "codex"));
+  }
+
+  for (const candidate of dedupe(candidates)) {
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  return "";
+}
+
+function readNpmPrefix() {
+  const result = spawnSync("npm", ["config", "get", "prefix"], {
+    cwd: repoRoot,
+    stdio: ["ignore", "pipe", "pipe"],
+    shell: false,
+    encoding: "utf8"
+  });
+  if (result.error || result.status !== 0) {
+    return "";
+  }
+
+  const value = String(result.stdout ?? "").trim();
+  if (!value || value.toLowerCase() === "undefined") {
+    return "";
+  }
+  return value;
+}
+
+function runNpm(args, stdioMode) {
+  const stdio = stdioMode === "inherit" ? "inherit" : ["ignore", "pipe", "pipe"];
+  const result = spawnSync("npm", args, {
+    cwd: repoRoot,
+    stdio,
+    shell: false,
+    encoding: "utf8"
+  });
+
+  if (result.error) {
+    return {
+      ok: false,
+      stdout: "",
+      stderr: "",
+      errorMessage: formatNpmSpawnError(result.error),
+      errorCode: normalizeErrorCode(result.error)
+    };
+  }
+
+  const code = Number.isInteger(result.status) ? result.status : 1;
+  return {
+    ok: code === 0,
+    stdout: String(result.stdout ?? "").trim(),
+    stderr: String(result.stderr ?? "").trim(),
+    errorMessage: "",
+    errorCode: ""
+  };
 }
 
 function readEnvValue(filePath, key) {
@@ -234,7 +473,7 @@ function firstLine(value) {
 }
 
 function formatCodexSpawnError(command, error) {
-  const code = String(error?.code ?? "").trim().toUpperCase();
+  const code = normalizeErrorCode(error);
   if (code === "ENOENT") {
     return `Codex binary '${command}' was not found. Install Codex CLI or set CODEX_BIN.`;
   }
@@ -243,6 +482,26 @@ function formatCodexSpawnError(command, error) {
   }
   const message = error instanceof Error ? error.message : String(error);
   return `Failed to execute '${command}': ${firstLine(message)}`;
+}
+
+function formatNpmSpawnError(error) {
+  const code = normalizeErrorCode(error);
+  if (code === "ENOENT") {
+    return "npm was not found. Install Node.js/npm, then retry.";
+  }
+  if (code === "EPERM") {
+    return "npm cannot be executed (EPERM). Check permissions.";
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return `Failed to execute 'npm': ${firstLine(message)}`;
+}
+
+function normalizeErrorCode(error) {
+  return String(error?.code ?? "").trim().toUpperCase();
+}
+
+function dedupe(values) {
+  return [...new Set(values.map((value) => String(value).trim()).filter(Boolean))];
 }
 
 function printUsage() {
