@@ -9,7 +9,8 @@
   ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",
-    "start": "npm run build && node scripts/cli.mjs start",
+    "prepare:shared": "node scripts/ensure-shared-build.mjs",
+    "start": "node scripts/cli.mjs start",
     "stop": "node scripts/cli.mjs stop",
     "restart": "node scripts/cli.mjs restart",
     "status": "node scripts/cli.mjs status",
@@ -17,12 +18,14 @@
     "configure": "node scripts/cli.mjs configure",
     "test": "npm run test --workspaces --if-present",
     "lint": "eslint .",
-    "format": "prettier --write \"{scripts,packages}/**/*.{js,mjs,ts,json}\" \"{README.md,CONTRIBUTING.md,ARCHITECTURE.md}\" \"eslint.config.mjs\" \"package.json\" \"tsconfig.base.json\"",
-    "format:check": "prettier --check \"{scripts,packages}/**/*.{js,mjs,ts,json}\" \"{README.md,CONTRIBUTING.md,ARCHITECTURE.md}\" \"eslint.config.mjs\" \"package.json\" \"tsconfig.base.json\"",
-    "start:control-plane": "npm run build && npm --prefix apps/control-plane run start",
-    "start:agent-engine": "npm run build && npm --prefix apps/agent-engine run start",
+    "format": "prettier --write \"{scripts,packages}/**/*.{js,mjs,ts,json}\" \"apps/*/package.json\" \"apps/*/test/**/*.js\" \"{README.md,CONTRIBUTING.md,ARCHITECTURE.md}\" \"eslint.config.mjs\" \"package.json\" \"tsconfig.base.json\"",
+    "format:check": "prettier --check \"{scripts,packages}/**/*.{js,mjs,ts,json}\" \"apps/*/package.json\" \"apps/*/test/**/*.js\" \"{README.md,CONTRIBUTING.md,ARCHITECTURE.md}\" \"eslint.config.mjs\" \"package.json\" \"tsconfig.base.json\"",
+    "start:control-plane": "npm --prefix apps/control-plane run start",
+    "start:agent-engine": "npm --prefix apps/agent-engine run start",
     "setup:agent-engine": "npm --prefix apps/agent-engine run setup",
-    "check:agent-engine": "node --check apps/agent-engine/src/index.js"
+    "check:agent-engine": "node --check apps/agent-engine/src/index.js",
+    "check:control-plane": "node --check apps/control-plane/src/copilot-hub.js",
+    "check:apps": "npm run check:agent-engine && npm run check:control-plane"
   },
   "devDependencies": {
     "@eslint/js": "^9.22.0",

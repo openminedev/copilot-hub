@@ -25,6 +25,7 @@ async function main() {
   switch (action) {
     case "start": {
       runNode(["scripts/configure.mjs", "--required-only"]);
+      runNode(["scripts/ensure-shared-build.mjs"]);
       await ensureCodexLogin();
       runNode(["scripts/supervisor.mjs", "up"]);
       return;
@@ -34,6 +35,7 @@ async function main() {
       return;
     }
     case "restart": {
+      runNode(["scripts/ensure-shared-build.mjs"]);
       runNode(["scripts/supervisor.mjs", "restart"]);
       return;
     }
@@ -372,10 +374,9 @@ function findWindowsNpmGlobalCodexBin() {
 }
 
 function readNpmPrefix() {
-  const result = spawnSync("npm", ["config", "get", "prefix"], {
+  const result = spawnNpm(["config", "get", "prefix"], {
     cwd: repoRoot,
     stdio: ["ignore", "pipe", "pipe"],
-    shell: false,
     encoding: "utf8",
   });
   if (result.error || result.status !== 0) {
@@ -391,10 +392,9 @@ function readNpmPrefix() {
 
 function runNpm(args, stdioMode) {
   const stdio = stdioMode === "inherit" ? "inherit" : ["ignore", "pipe", "pipe"];
-  const result = spawnSync("npm", args, {
+  const result = spawnNpm(args, {
     cwd: repoRoot,
     stdio,
-    shell: false,
     encoding: "utf8",
   });
 
@@ -514,6 +514,22 @@ function normalizeErrorCode(error) {
 
 function dedupe(values) {
   return [...new Set(values.map((value) => String(value).trim()).filter(Boolean))];
+}
+
+function spawnNpm(args, options) {
+  if (process.platform === "win32") {
+    const comspec = process.env.ComSpec || "cmd.exe";
+    const commandLine = ["npm", ...args].join(" ");
+    return spawnSync(comspec, ["/d", "/s", "/c", commandLine], {
+      ...options,
+      shell: false,
+    });
+  }
+
+  return spawnSync("npm", args, {
+    ...options,
+    shell: false,
+  });
 }
 
 function printUsage() {

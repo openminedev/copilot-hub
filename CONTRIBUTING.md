@@ -20,6 +20,7 @@ Thanks for contributing to Copilot Hub.
    - `npm run test`
    - `npm run lint`
    - `npm run format:check`
+   - `npm run check:apps`
 3. Run smoke checks for impacted app(s).
 4. Update docs if behavior changed.
 

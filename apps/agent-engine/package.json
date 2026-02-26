@@ -6,8 +6,11 @@
   "type": "module",
   "scripts": {
     "setup": "node scripts/setup-runtime.mjs",
+    "prestart": "node ../../scripts/ensure-shared-build.mjs",
     "start": "node src/index.js",
-    "dev": "node --watch src/index.js"
+    "predev": "node ../../scripts/ensure-shared-build.mjs",
+    "dev": "node --watch src/index.js",
+    "test": "node --test \"test/**/*.test.js\""
   },
   "engines": {
     "node": ">=20"
