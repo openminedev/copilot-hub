@@ -9,7 +9,7 @@
     "start": "node src/copilot-hub.js",
     "predev": "node ../../scripts/ensure-shared-build.mjs",
     "dev": "node --watch src/copilot-hub.js",
-    "test": "node --test \"test/**/*.test.js\""
+    "test": "node --test"
   },
   "engines": {
     "node": ">=20"
