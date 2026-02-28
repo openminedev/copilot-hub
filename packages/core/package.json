@@ -53,6 +53,10 @@
     "./secret-store": {
       "types": "./dist/secret-store.d.ts",
       "import": "./dist/secret-store.js"
+    },
+    "./bot-registry": {
+      "types": "./dist/bot-registry.d.ts",
+      "import": "./dist/bot-registry.js"
     }
   },
   "files": [

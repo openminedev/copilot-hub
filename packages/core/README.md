@@ -13,5 +13,6 @@ Current modules:
 - `kernel-version`: shared kernel version constant.
 - `capability-scaffold`: capability scaffolding helpers.
 - `secret-store`: shared secret store helper.
+- `bot-registry`: shared registry loader/normalizer for runtime agents.
 
 Use this package for cross-app primitives that must stay consistent across planes.

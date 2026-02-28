@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { loadBotRegistry } from "../bot-registry.js";
+import { loadBotRegistry } from "@copilot-hub/core/bot-registry";
 import {
   scaffoldCapabilityInWorkspace,
   normalizeCapabilityId,

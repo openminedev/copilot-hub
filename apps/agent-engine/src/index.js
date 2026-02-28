@@ -1,7 +1,7 @@
 ﻿import path from "node:path";
 import express from "express";
 import { BotManager } from "./bot-manager.js";
-import { loadBotRegistry } from "./bot-registry.js";
+import { loadBotRegistry } from "@copilot-hub/core/bot-registry";
 import { config } from "./config.js";
 import { InstanceLock } from "@copilot-hub/core/instance-lock";
 import { KernelControlPlane } from "./kernel/control-plane.js";

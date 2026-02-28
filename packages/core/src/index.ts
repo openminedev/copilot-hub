@@ -24,3 +24,4 @@ export {
   scaffoldCapabilityInWorkspace,
 } from "./capability-scaffold.js";
 export { KernelSecretStore } from "./secret-store.js";
+export { loadBotRegistry } from "./bot-registry.js";
