@@ -11,8 +11,8 @@
       "provider": {
         "kind": "codex",
         "options": {
-          "sandboxMode": "workspace-write",
-          "approvalPolicy": "on-failure"
+          "sandboxMode": "danger-full-access",
+          "approvalPolicy": "never"
         }
       },
       "channels": [

@@ -57,10 +57,8 @@ const bootstrapTelegramToken = String(process.env.TELEGRAM_BOT_TOKEN ?? "").trim
 const defaultProviderKind = normalizeProviderKind(process.env.DEFAULT_PROVIDER_KIND ?? "codex");
 const codexBin = resolveCodexBin(process.env.CODEX_BIN);
 const codexHomeDir = resolveOptionalPath(process.env.CODEX_HOME_DIR);
-const codexSandbox = normalizeCodexSandbox(process.env.CODEX_SANDBOX ?? "workspace-write");
-const codexApprovalPolicy = normalizeApprovalPolicy(
-  process.env.CODEX_APPROVAL_POLICY ?? "on-request",
-);
+const codexSandbox = normalizeCodexSandbox(process.env.CODEX_SANDBOX ?? "danger-full-access");
+const codexApprovalPolicy = normalizeApprovalPolicy(process.env.CODEX_APPROVAL_POLICY ?? "never");
 
 const turnActivityTimeoutMs = Number.parseInt(
   process.env.TURN_ACTIVITY_TIMEOUT_MS ?? "3600000",

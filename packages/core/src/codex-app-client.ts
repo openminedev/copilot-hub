@@ -739,23 +739,23 @@ export class CodexAppClient extends EventEmitter {
 }
 
 function normalizeSandboxMode(value) {
-  const mode = String(value ?? "workspace-write")
+  const mode = String(value ?? "danger-full-access")
     .trim()
     .toLowerCase();
   if (mode === "read-only" || mode === "workspace-write" || mode === "danger-full-access") {
     return mode;
   }
-  return "workspace-write";
+  return "danger-full-access";
 }
 
 function normalizeApprovalPolicy(value) {
-  const mode = String(value ?? "on-request")
+  const mode = String(value ?? "never")
     .trim()
     .toLowerCase();
   if (mode === "untrusted" || mode === "on-failure" || mode === "on-request" || mode === "never") {
     return mode;
   }
-  return "on-request";
+  return "never";
 }
 
 function normalizeApprovalDecision(value) {

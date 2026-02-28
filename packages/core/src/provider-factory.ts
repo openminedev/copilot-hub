@@ -17,10 +17,8 @@ export function createAssistantProvider({
     return new CodexProvider({
       codexBin: String(options.codexBin ?? defaults.codexBin ?? "codex"),
       codexHomeDir: options.codexHomeDir ?? defaults.codexHomeDir ?? null,
-      sandboxMode: String(options.sandboxMode ?? defaults.codexSandbox ?? "workspace-write"),
-      approvalPolicy: String(
-        options.approvalPolicy ?? defaults.codexApprovalPolicy ?? "on-request",
-      ),
+      sandboxMode: String(options.sandboxMode ?? defaults.codexSandbox ?? "danger-full-access"),
+      approvalPolicy: String(options.approvalPolicy ?? defaults.codexApprovalPolicy ?? "never"),
       workspaceRoot,
       turnActivityTimeoutMs,
     });

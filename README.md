@@ -147,6 +147,7 @@ You need one Telegram bot token per runtime agent.
    - Step 3: reply `YES`
 
 After creation, use `/bots` in the hub chat to manage policy, reset context, or delete an agent.
+A streamlined default profile is applied, and actions start from that agent workspace folder.
 
 ### 4) Token safety
 

@@ -15,24 +15,28 @@ const POLICY_PROFILES = {
   safe: {
     id: "safe",
     label: "Safe",
+    hint: "read-only + approval prompts",
     sandboxMode: "read-only",
     approvalPolicy: "on-request",
   },
   standard: {
     id: "standard",
     label: "Standard",
+    hint: "workspace write + approval prompts",
     sandboxMode: "workspace-write",
     approvalPolicy: "on-request",
   },
   semi_auto: {
     id: "semi_auto",
     label: "Semi Auto",
+    hint: "workspace write + ask on failures",
     sandboxMode: "workspace-write",
     approvalPolicy: "on-failure",
   },
   full_auto: {
     id: "full_auto",
-    label: "Full Auto",
+    label: "Full",
+    hint: "no approval prompts",
     sandboxMode: "danger-full-access",
     approvalPolicy: "never",
   },
@@ -182,6 +186,8 @@ export async function maybeHandleHubOpsFollowUp({ ctx, runtime, channelId }) {
         "Step 3 confirm:",
         `agentId: ${flow.botId}`,
         `telegram: @${flow.tokenInfo?.username || "unknown"}`,
+        "Default policy after create: Full (no approval prompts).",
+        "Agent actions start from its own workspace folder.",
         "Reply YES to create, or NO to cancel.",
       ].join("\n"),
     );
@@ -300,7 +306,7 @@ export async function maybeHandleHubOpsCallback({ ctx }) {
       await renderBotActions(ctx, {
         sessionId: action.sessionId,
         index: action.index,
-        notice: `Policy updated: ${profile.label}`,
+        notice: `Policy updated: ${profile.label} (${profile.hint})`,
       });
       await answerCallbackQuerySafe(ctx, "Policy updated");
       return true;
@@ -370,6 +376,13 @@ function buildHelpText(runtimeName) {
     "/bots",
     "/create_agent",
     "/cancel",
+    "",
+    "Policy guide in /bots:",
+    "Safe: read-only + approval prompts",
+    "Standard: workspace write + approval prompts",
+    "Semi Auto: workspace write + ask on failures",
+    "Full: no approval prompts",
+    "All agent actions start from that agent workspace.",
     "",
     "For development tasks, send a normal message to the assistant.",
   ].join("\n");
@@ -466,6 +479,13 @@ async function renderBotActions(ctx, { sessionId, index, notice = "" }) {
     `sandboxMode: ${String(providerOptions.sandboxMode ?? "-")}`,
     `approvalPolicy: ${String(providerOptions.approvalPolicy ?? "-")}`,
     "",
+    "Policy quick guide:",
+    "Safe = read-only + approval prompts",
+    "Standard = workspace write + approval prompts",
+    "Semi Auto = workspace write + ask on failures",
+    "Full = no approval prompts",
+    "All actions start from this agent workspace.",
+    "",
     "Choose an action:",
   );
 
@@ -531,12 +551,12 @@ function buildBotsMenuKeyboard(sessionId, bots) {
 function buildBotActionsKeyboard(sessionId, index) {
   return [
     [
-      { text: "Policy Safe", callback_data: `hub:p:${sessionId}:${index}:safe` },
-      { text: "Policy Standard", callback_data: `hub:p:${sessionId}:${index}:standard` },
+      { text: "Safe (read-only)", callback_data: `hub:p:${sessionId}:${index}:safe` },
+      { text: "Standard (ask)", callback_data: `hub:p:${sessionId}:${index}:standard` },
     ],
     [
-      { text: "Policy Semi", callback_data: `hub:p:${sessionId}:${index}:semi_auto` },
-      { text: "Policy Full", callback_data: `hub:p:${sessionId}:${index}:full_auto` },
+      { text: "Semi (fail ask)", callback_data: `hub:p:${sessionId}:${index}:semi_auto` },
+      { text: "Full (no prompts)", callback_data: `hub:p:${sessionId}:${index}:full_auto` },
     ],
     [{ text: "Reset Context", callback_data: `hub:ra:${sessionId}:${index}` }],
     [{ text: "Delete Agent", callback_data: `hub:da:${sessionId}:${index}` }],
@@ -734,8 +754,8 @@ function buildTelegramAgentDefinition({ botId, token }) {
     provider: {
       kind: "codex",
       options: {
-        sandboxMode: "workspace-write",
-        approvalPolicy: "on-request",
+        sandboxMode: "danger-full-access",
+        approvalPolicy: "never",
       },
     },
     channels: [
