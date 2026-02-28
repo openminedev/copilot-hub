@@ -1,8 +1,48 @@
 {
   "name": "copilot-hub",
   "version": "0.1.0",
-  "private": true,
-  "description": "Copilot Hub monorepo",
+  "description": "Copilot Hub CLI and runtime bundle",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/openminedev/copilot-hub.git"
+  },
+  "homepage": "https://github.com/openminedev/copilot-hub#readme",
+  "bugs": {
+    "url": "https://github.com/openminedev/copilot-hub/issues"
+  },
+  "keywords": [
+    "copilot",
+    "telegram",
+    "agents",
+    "automation",
+    "cli"
+  ],
+  "bin": {
+    "copilot-hub": "scripts/cli.mjs"
+  },
+  "files": [
+    "README.md",
+    "LICENSE",
+    "scripts/",
+    "apps/agent-engine/.env.example",
+    "apps/agent-engine/bot-registry.example.json",
+    "apps/agent-engine/capabilities/",
+    "apps/agent-engine/dist/",
+    "apps/agent-engine/package.json",
+    "apps/control-plane/.env.example",
+    "apps/control-plane/bot-registry.example.json",
+    "apps/control-plane/capabilities/",
+    "apps/control-plane/dist/",
+    "apps/control-plane/package.json",
+    "packages/contracts/dist/",
+    "packages/contracts/package.json",
+    "packages/core/dist/",
+    "packages/core/package.json"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "workspaces": [
     "apps/*",
     "packages/*"
@@ -25,7 +65,15 @@
     "setup:agent-engine": "npm --prefix apps/agent-engine run setup",
     "check:agent-engine": "npm --prefix apps/agent-engine run build && node --check apps/agent-engine/dist/index.js",
     "check:control-plane": "npm --prefix apps/control-plane run build && node --check apps/control-plane/dist/copilot-hub.js",
-    "check:apps": "npm run check:agent-engine && npm run check:control-plane"
+    "check:apps": "npm run check:agent-engine && npm run check:control-plane",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "@copilot-hub/contracts": "file:packages/contracts",
+    "@copilot-hub/core": "file:packages/core",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "grammy": "^1.38.3"
   },
   "devDependencies": {
     "@eslint/js": "^9.22.0",

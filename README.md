@@ -63,7 +63,20 @@ flowchart TD
     U4 --> O1
 ```
 
-## Quick start
+## Install from npm
+
+```bash
+npm install -g copilot-hub@latest
+```
+
+Then run:
+
+```bash
+copilot-hub configure
+copilot-hub start
+```
+
+## Quick start from source
 
 1. Install dependencies:
 
