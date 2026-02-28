@@ -51,11 +51,4 @@ jobs:
           fi
 
       - name: Publish (Trusted Publishing)
-        if: ${{ secrets.NPM_TOKEN == '' }}
         run: npm publish --access public --provenance
-
-      - name: Publish (NPM token fallback)
-        if: ${{ secrets.NPM_TOKEN != '' }}
-        run: npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
