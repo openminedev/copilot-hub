@@ -177,6 +177,24 @@ npm run format:check
 npm run check:apps
 ```
 
+## npm release (CI)
+
+Publishing is automated from GitHub Actions on tags (`v*`).
+
+Release flow:
+
+```bash
+npm version patch
+git push origin main --follow-tags
+```
+
+The release workflow validates build/test/lint/format, checks that the tag version matches `package.json`, then publishes to npm.
+
+Authentication options:
+
+- Recommended: npm Trusted Publishing (OIDC/provenance)
+- Fallback: set `NPM_TOKEN` in GitHub repository secrets
+
 ## Workspace policy
 
 - Default workspace root: `~/Desktop/copilot_workspaces` when not explicitly set.
