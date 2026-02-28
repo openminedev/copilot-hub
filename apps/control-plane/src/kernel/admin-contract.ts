@@ -1,3 +1,4 @@
+// @ts-nocheck
 const BOT_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
 export const DEFAULT_ADMIN_BOT_ID = "admin_agent";
@@ -30,23 +31,26 @@ export function buildAdminAgentDefinition({ botId, tokenEnvName }) {
     autoStart: true,
     dataDir: `./data/bots/${normalizedBotId}`,
     threadMode: "single",
-    sharedThreadId: normalizedBotId === DEFAULT_ADMIN_BOT_ID ? "shared-admin" : `shared-${normalizedBotId.replace(/_/g, "-")}`,
+    sharedThreadId:
+      normalizedBotId === DEFAULT_ADMIN_BOT_ID
+        ? "shared-admin"
+        : `shared-${normalizedBotId.replace(/_/g, "-")}`,
     provider: {
       kind: "codex",
-      options: {}
+      options: {},
     },
     kernelAccess: {
       enabled: true,
       allowedActions: ["*"],
-      allowedChatIds: []
+      allowedChatIds: [],
     },
     channels: [
       {
         kind: "telegram",
         id: DEFAULT_ADMIN_CHANNEL_ID,
-        tokenEnv: normalizedTokenEnv
-      }
+        tokenEnv: normalizedTokenEnv,
+      },
     ],
-    capabilities: []
+    capabilities: [],
   };
 }

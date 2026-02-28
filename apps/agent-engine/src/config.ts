@@ -1,51 +1,70 @@
+// @ts-nocheck
 import fs from "node:fs";
 import path from "node:path";
 import dotenv from "dotenv";
-import { createWorkspaceBoundaryPolicy, assertWorkspaceAllowed, parseWorkspaceAllowedRoots } from "@copilot-hub/core/workspace-policy";
-import { normalizeAdminBotId, normalizeAdminTokenEnv } from "./kernel/admin-contract.js";
-import { getDefaultExternalWorkspaceBasePath, getKernelRootPath } from "@copilot-hub/core/workspace-paths";
+import {
+  createWorkspaceBoundaryPolicy,
+  assertWorkspaceAllowed,
+  parseWorkspaceAllowedRoots,
+} from "@copilot-hub/core/workspace-policy";
+import {
+  getDefaultExternalWorkspaceBasePath,
+  getKernelRootPath,
+} from "@copilot-hub/core/workspace-paths";
 
 dotenv.config();
 
 const kernelRootPath = getKernelRootPath();
-const defaultWorkspaceRoot = resolveWorkspaceRoot(process.env.DEFAULT_WORKSPACE_ROOT ?? getDefaultExternalWorkspaceBasePath(kernelRootPath));
-const projectsBaseDir = path.resolve(process.env.PROJECTS_BASE_DIR ?? defaultWorkspaceRoot);
+const configuredDefaultWorkspaceRoot = String(process.env.DEFAULT_WORKSPACE_ROOT ?? "").trim();
+const defaultWorkspaceRoot = resolveWorkspaceRoot(
+  configuredDefaultWorkspaceRoot || getDefaultExternalWorkspaceBasePath(kernelRootPath),
+);
+const configuredProjectsBaseDir = String(process.env.PROJECTS_BASE_DIR ?? "").trim();
+const projectsBaseDir = path.resolve(configuredProjectsBaseDir || defaultWorkspaceRoot);
 const workspaceStrictMode = parseBoolean(process.env.WORKSPACE_STRICT_MODE ?? "true");
-const workspaceAllowedRoots = parseWorkspaceAllowedRoots(process.env.WORKSPACE_ALLOWED_ROOTS ?? "", {
-  cwd: process.cwd()
-});
+const workspaceAllowedRoots = parseWorkspaceAllowedRoots(
+  process.env.WORKSPACE_ALLOWED_ROOTS ?? "",
+  {
+    cwd: process.cwd(),
+  },
+);
 const workspacePolicy = createWorkspaceBoundaryPolicy({
   kernelRootPath,
   defaultWorkspaceRoot,
   projectsBaseDir,
   strictMode: workspaceStrictMode,
-  additionalAllowedRoots: workspaceAllowedRoots
+  additionalAllowedRoots: workspaceAllowedRoots,
 });
 assertWorkspaceAllowed({
   workspaceRoot: defaultWorkspaceRoot,
   policy: workspacePolicy,
-  label: "DEFAULT_WORKSPACE_ROOT"
+  label: "DEFAULT_WORKSPACE_ROOT",
 });
 
 const dataDir = path.resolve(process.env.BOT_DATA_DIR ?? path.join(process.cwd(), "data"));
-const botRegistryFilePath = path.resolve(process.env.BOT_REGISTRY_FILE ?? path.join(dataDir, "bot-registry.json"));
-const secretStoreFilePath = path.resolve(process.env.SECRET_STORE_FILE ?? path.join(dataDir, "secrets.json"));
-const adminBotId = normalizeAdminBotId(process.env.ADMIN_BOT_ID ?? "admin_agent");
-const adminTelegramTokenEnvName = normalizeAdminTokenEnv(process.env.ADMIN_TELEGRAM_TOKEN_ENV ?? "TELEGRAM_TOKEN_ADMIN");
-const adminTelegramToken = String(process.env[adminTelegramTokenEnvName] ?? "").trim();
+const botRegistryFilePath = path.resolve(
+  process.env.BOT_REGISTRY_FILE ?? path.join(dataDir, "bot-registry.json"),
+);
+const secretStoreFilePath = path.resolve(
+  process.env.SECRET_STORE_FILE ?? path.join(dataDir, "secrets.json"),
+);
 const instanceLockEnabled = parseBoolean(process.env.INSTANCE_LOCK_ENABLED ?? "true");
-const instanceLockFilePath = path.resolve(process.env.INSTANCE_LOCK_FILE ?? path.join(dataDir, "runtime.lock"));
+const instanceLockFilePath = path.resolve(
+  process.env.INSTANCE_LOCK_FILE ?? path.join(dataDir, "runtime.lock"),
+);
 
 const bootstrapTelegramToken = String(process.env.TELEGRAM_BOT_TOKEN ?? "").trim();
 const defaultProviderKind = normalizeProviderKind(process.env.DEFAULT_PROVIDER_KIND ?? "codex");
 const codexBin = resolveCodexBin(process.env.CODEX_BIN);
 const codexHomeDir = resolveOptionalPath(process.env.CODEX_HOME_DIR);
 const codexSandbox = normalizeCodexSandbox(process.env.CODEX_SANDBOX ?? "workspace-write");
-const codexApprovalPolicy = normalizeApprovalPolicy(process.env.CODEX_APPROVAL_POLICY ?? "on-request");
+const codexApprovalPolicy = normalizeApprovalPolicy(
+  process.env.CODEX_APPROVAL_POLICY ?? "on-request",
+);
 
 const turnActivityTimeoutMs = Number.parseInt(
   process.env.TURN_ACTIVITY_TIMEOUT_MS ?? "3600000",
-  10
+  10,
 );
 if (!Number.isFinite(turnActivityTimeoutMs) || turnActivityTimeoutMs < 10000) {
   throw new Error("TURN_ACTIVITY_TIMEOUT_MS must be an integer >= 10000.");
@@ -71,13 +90,27 @@ if (!Number.isFinite(webPortSearchMax) || webPortSearchMax < 1 || webPortSearchM
 }
 
 const agentHeartbeatEnabled = parseBoolean(process.env.AGENT_HEARTBEAT_ENABLED ?? "true");
-const agentHeartbeatIntervalMs = Number.parseInt(process.env.AGENT_HEARTBEAT_INTERVAL_MS ?? "5000", 10);
-if (!Number.isFinite(agentHeartbeatIntervalMs) || agentHeartbeatIntervalMs < 1000 || agentHeartbeatIntervalMs > 600000) {
+const agentHeartbeatIntervalMs = Number.parseInt(
+  process.env.AGENT_HEARTBEAT_INTERVAL_MS ?? "5000",
+  10,
+);
+if (
+  !Number.isFinite(agentHeartbeatIntervalMs) ||
+  agentHeartbeatIntervalMs < 1000 ||
+  agentHeartbeatIntervalMs > 600000
+) {
   throw new Error("AGENT_HEARTBEAT_INTERVAL_MS must be an integer in range 1000..600000.");
 }
 
-const agentHeartbeatTimeoutMs = Number.parseInt(process.env.AGENT_HEARTBEAT_TIMEOUT_MS ?? "4000", 10);
-if (!Number.isFinite(agentHeartbeatTimeoutMs) || agentHeartbeatTimeoutMs < 500 || agentHeartbeatTimeoutMs > 60000) {
+const agentHeartbeatTimeoutMs = Number.parseInt(
+  process.env.AGENT_HEARTBEAT_TIMEOUT_MS ?? "4000",
+  10,
+);
+if (
+  !Number.isFinite(agentHeartbeatTimeoutMs) ||
+  agentHeartbeatTimeoutMs < 500 ||
+  agentHeartbeatTimeoutMs > 60000
+) {
   throw new Error("AGENT_HEARTBEAT_TIMEOUT_MS must be an integer in range 500..60000.");
 }
 
@@ -91,7 +124,7 @@ const defaultAllowedChatIds = new Set(
   (process.env.TELEGRAM_ALLOWED_CHAT_IDS ?? "")
     .split(",")
     .map((value) => value.trim())
-    .filter(Boolean)
+    .filter(Boolean),
 );
 
 fs.mkdirSync(dataDir, { recursive: true });
@@ -103,7 +136,7 @@ export const config = {
     codexBin,
     codexHomeDir,
     codexSandbox,
-    codexApprovalPolicy
+    codexApprovalPolicy,
   },
   codexBin,
   codexHomeDir,
@@ -118,9 +151,6 @@ export const config = {
   dataDir,
   botRegistryFilePath,
   secretStoreFilePath,
-  adminBotId,
-  adminTelegramTokenEnvName,
-  adminTelegramToken,
   instanceLockEnabled,
   instanceLockFilePath,
   bootstrapTelegramToken,
@@ -137,7 +167,7 @@ export const config = {
   agentHeartbeatTimeoutMs,
   defaultThreadMode,
   defaultSharedThreadId,
-  defaultAllowedChatIds
+  defaultAllowedChatIds,
 };
 
 function resolveCodexBin(rawValue) {
@@ -188,7 +218,9 @@ function findVscodeCodexExe() {
 }
 
 function normalizeThreadMode(value) {
-  const mode = String(value ?? "single").trim().toLowerCase();
+  const mode = String(value ?? "single")
+    .trim()
+    .toLowerCase();
   if (mode === "single" || mode === "per_chat") {
     return mode;
   }
@@ -217,7 +249,9 @@ function resolveOptionalPath(value) {
 }
 
 function normalizeCodexSandbox(value) {
-  const mode = String(value ?? "").trim().toLowerCase();
+  const mode = String(value ?? "")
+    .trim()
+    .toLowerCase();
   if (mode === "read-only" || mode === "workspace-write" || mode === "danger-full-access") {
     return mode;
   }
@@ -225,15 +259,21 @@ function normalizeCodexSandbox(value) {
 }
 
 function normalizeApprovalPolicy(value) {
-  const mode = String(value ?? "").trim().toLowerCase();
+  const mode = String(value ?? "")
+    .trim()
+    .toLowerCase();
   if (mode === "untrusted" || mode === "on-failure" || mode === "on-request" || mode === "never") {
     return mode;
   }
-  throw new Error("CODEX_APPROVAL_POLICY must be one of: untrusted, on-failure, on-request, never.");
+  throw new Error(
+    "CODEX_APPROVAL_POLICY must be one of: untrusted, on-failure, on-request, never.",
+  );
 }
 
 function normalizeProviderKind(value) {
-  const kind = String(value ?? "").trim().toLowerCase();
+  const kind = String(value ?? "")
+    .trim()
+    .toLowerCase();
   if (!kind) {
     return "codex";
   }

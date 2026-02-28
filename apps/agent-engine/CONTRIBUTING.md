@@ -30,7 +30,8 @@ npm run start
 - Validate syntax before opening a PR:
 
 ```bash
-node --check src/index.js
+npm run build
+node --check dist/index.js
 ```
 
 ## Pull requests

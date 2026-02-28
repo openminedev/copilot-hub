@@ -17,14 +17,14 @@ const SERVICES = [
   {
     id: "agent-engine",
     workingDir: path.join(repoRoot, "apps", "agent-engine"),
-    entryScript: "src/index.js",
+    entryScript: "dist/index.js",
     logFile: path.join(logsDir, "agent-engine.log"),
   },
 
   {
     id: "control-plane",
     workingDir: path.join(repoRoot, "apps", "control-plane"),
-    entryScript: "src/copilot-hub.js",
+    entryScript: "dist/copilot-hub.js",
     logFile: path.join(logsDir, "control-plane.log"),
   },
 ].map((service) => ({

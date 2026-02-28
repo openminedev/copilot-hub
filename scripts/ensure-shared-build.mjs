@@ -14,6 +14,8 @@ const requiredOutputs = [
   path.join(repoRoot, "packages", "core", "dist", "workspace-policy.js"),
   path.join(repoRoot, "packages", "contracts", "dist", "index.js"),
   path.join(repoRoot, "packages", "contracts", "dist", "control-plane.js"),
+  path.join(repoRoot, "apps", "agent-engine", "dist", "index.js"),
+  path.join(repoRoot, "apps", "control-plane", "dist", "copilot-hub.js"),
 ];
 
 await main();

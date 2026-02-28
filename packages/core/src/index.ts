@@ -29,6 +29,7 @@ export { AgentSupervisor } from "./agent-supervisor.js";
 export { ConversationEngine } from "./bridge-service.js";
 export { CodexAppClient } from "./codex-app-client.js";
 export { CodexProvider } from "./codex-provider.js";
+export { createExampleCapability } from "./example-capability.js";
 export { BotManager } from "./bot-manager.js";
 export { BotRuntime } from "./bot-runtime.js";
 export { CAPABILITY_HOOKS, CapabilityManager } from "./capability-manager.js";

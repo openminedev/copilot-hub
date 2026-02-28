@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { BotRuntime } from "@copilot-hub/core/bot-runtime";
 import { createChannelAdapter } from "./channels/channel-factory.js";
 
@@ -5,11 +6,16 @@ const rawBotConfig = String(process.env.AGENT_BOT_CONFIG_JSON ?? "").trim();
 const rawProviderDefaults = String(process.env.AGENT_PROVIDER_DEFAULTS_JSON ?? "").trim();
 const turnActivityTimeoutMs = Number.parseInt(
   String(process.env.AGENT_TURN_ACTIVITY_TIMEOUT_MS ?? "3600000"),
-  10
+  10,
 );
 const maxMessages = Number.parseInt(String(process.env.AGENT_MAX_MESSAGES ?? "200"), 10);
-const initialWebPublicBaseUrl = String(process.env.AGENT_WEB_PUBLIC_BASE_URL ?? "http://127.0.0.1:8787").trim();
-const kernelRequestTimeoutMs = Number.parseInt(String(process.env.AGENT_KERNEL_REQUEST_TIMEOUT_MS ?? "20000"), 10);
+const initialWebPublicBaseUrl = String(
+  process.env.AGENT_WEB_PUBLIC_BASE_URL ?? "http://127.0.0.1:8787",
+).trim();
+const kernelRequestTimeoutMs = Number.parseInt(
+  String(process.env.AGENT_KERNEL_REQUEST_TIMEOUT_MS ?? "20000"),
+  10,
+);
 
 if (!rawBotConfig) {
   throw new Error("AGENT_BOT_CONFIG_JSON is required.");
@@ -27,9 +33,9 @@ const runtime = new BotRuntime({
   turnActivityTimeoutMs,
   maxMessages,
   kernelControl: {
-    request: (payload) => requestKernelAction(payload)
+    request: (payload) => requestKernelAction(payload),
   },
-  channelAdapterFactory: createChannelAdapter
+  channelAdapterFactory: createChannelAdapter,
 });
 runtime.setWebPublicBaseUrl(initialWebPublicBaseUrl);
 
@@ -61,7 +67,7 @@ process.on("unhandledRejection", (reason) => {
 
 sendEvent("workerReady", {
   runtimeId: runtime.id,
-  name: runtime.name
+  name: runtime.name,
 });
 
 async function handleInboundMessage(message) {
@@ -82,7 +88,7 @@ async function handleInboundMessage(message) {
       sendResponse({
         requestId,
         ok: false,
-        error: sanitizeError(error)
+        error: sanitizeError(error),
       });
       return;
     }
@@ -129,12 +135,14 @@ async function handleWorkerRequest(message) {
       result = await runtime.resolvePendingApproval({
         threadId: String(payload?.threadId ?? ""),
         approvalId: String(payload?.approvalId ?? ""),
-        decision: String(payload?.decision ?? "")
+        decision: String(payload?.decision ?? ""),
       });
       break;
     }
     case "reloadCapabilities": {
-      const capabilityDefinitions = Array.isArray(payload?.capabilityDefinitions) ? payload.capabilityDefinitions : null;
+      const capabilityDefinitions = Array.isArray(payload?.capabilityDefinitions)
+        ? payload.capabilityDefinitions
+        : null;
       result = await runtime.reloadCapabilities(capabilityDefinitions);
       break;
     }
@@ -192,7 +200,7 @@ function sendResponse(value) {
   }
   process.send({
     type: "response",
-    ...value
+    ...value,
   });
 }
 
@@ -203,7 +211,7 @@ function sendEvent(event, payload) {
   process.send({
     type: "event",
     event,
-    payload
+    payload,
   });
 }
 
@@ -213,7 +221,10 @@ function requestKernelAction({ action, payload, context }) {
   }
 
   const requestId = `kreq_${Date.now()}_${nextKernelRequestId++}`;
-  const timeoutMs = Number.isFinite(kernelRequestTimeoutMs) && kernelRequestTimeoutMs >= 1000 ? kernelRequestTimeoutMs : 20000;
+  const timeoutMs =
+    Number.isFinite(kernelRequestTimeoutMs) && kernelRequestTimeoutMs >= 1000
+      ? kernelRequestTimeoutMs
+      : 20000;
 
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -224,7 +235,7 @@ function requestKernelAction({ action, payload, context }) {
     pendingKernelRequests.set(requestId, {
       resolve,
       reject,
-      timer
+      timer,
     });
 
     try {
@@ -233,7 +244,7 @@ function requestKernelAction({ action, payload, context }) {
         requestId,
         action,
         payload,
-        context
+        context,
       });
     } catch (error) {
       clearTimeout(timer);

@@ -5,12 +5,14 @@
   "description": "Copilot Hub control plane",
   "type": "module",
   "scripts": {
-    "prestart": "node ../../scripts/ensure-shared-build.mjs",
-    "start": "node src/copilot-hub.js",
-    "predev": "node ../../scripts/ensure-shared-build.mjs",
-    "dev": "node --watch src/copilot-hub.js",
-    "pretest": "node ../../scripts/ensure-shared-build.mjs",
-    "test": "node --test"
+    "build": "tsc -p tsconfig.json",
+    "build:test": "tsc -p tsconfig.test.json",
+    "prestart": "node ../../scripts/ensure-shared-build.mjs && npm run build",
+    "start": "node dist/copilot-hub.js",
+    "predev": "node ../../scripts/ensure-shared-build.mjs && npm run build",
+    "dev": "node --watch dist/copilot-hub.js",
+    "pretest": "node ../../scripts/ensure-shared-build.mjs && npm run build && npm run build:test",
+    "test": "node --test dist/test/**/*.test.js"
   },
   "engines": {
     "node": ">=20"

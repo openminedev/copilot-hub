@@ -1,3 +1,4 @@
+// @ts-nocheck
 export class WhatsAppChannel {
   constructor({ channelConfig, runtime }) {
     this.kind = "whatsapp";
@@ -33,7 +34,7 @@ export class WhatsAppChannel {
       kind: this.kind,
       id: this.id,
       running: this.running,
-      error: this.error
+      error: this.error,
     };
   }
 }

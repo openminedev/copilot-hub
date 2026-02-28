@@ -10,4 +10,5 @@ copilot_workspaces/
 Thumbs.db
 .copilot-hub/
 packages/*/dist/
+apps/*/dist/
 

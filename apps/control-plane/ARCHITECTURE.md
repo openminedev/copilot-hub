@@ -6,7 +6,7 @@
 
 ## Runtime model
 
-- One Telegram-facing bot (`src/copilot-hub.js`)
+- One Telegram-facing bot (`src/copilot-hub.ts`)
 - Command path for simple operations (`/health`, `/bots`, `/create_agent`)
 - LLM path for normal text requests
 

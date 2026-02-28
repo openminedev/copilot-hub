@@ -113,6 +113,10 @@
     "./kernel-control-plane": {
       "types": "./dist/kernel-control-plane.d.ts",
       "import": "./dist/kernel-control-plane.js"
+    },
+    "./example-capability": {
+      "types": "./dist/example-capability.d.ts",
+      "import": "./dist/example-capability.js"
     }
   },
   "files": [

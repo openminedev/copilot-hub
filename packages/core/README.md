@@ -28,5 +28,6 @@ Current modules:
 - `control-plane-actions`: shared control-plane action contracts.
 - `extension-contract`: shared extension contract descriptor.
 - `kernel-control-plane`: shared kernel control action executor.
+- `example-capability`: shared sample capability factory for local examples.
 
 Use this package for cross-app primitives that must stay consistent across planes.

@@ -1,4 +1,5 @@
-﻿import { randomBytes } from "node:crypto";
+// @ts-nocheck
+import { randomBytes } from "node:crypto";
 
 const MENU_TTL_MS = 15 * 60 * 1000;
 const FLOW_TTL_MS = 10 * 60 * 1000;
@@ -15,26 +16,26 @@ const POLICY_PROFILES = {
     id: "safe",
     label: "Safe",
     sandboxMode: "read-only",
-    approvalPolicy: "on-request"
+    approvalPolicy: "on-request",
   },
   standard: {
     id: "standard",
     label: "Standard",
     sandboxMode: "workspace-write",
-    approvalPolicy: "on-request"
+    approvalPolicy: "on-request",
   },
   semi_auto: {
     id: "semi_auto",
     label: "Semi Auto",
     sandboxMode: "workspace-write",
-    approvalPolicy: "on-failure"
+    approvalPolicy: "on-failure",
   },
   full_auto: {
     id: "full_auto",
     label: "Full Auto",
     sandboxMode: "danger-full-access",
-    approvalPolicy: "never"
-  }
+    approvalPolicy: "never",
+  },
 };
 
 export async function maybeHandleHubOpsCommand({ ctx, runtime, channelId }) {
@@ -63,8 +64,8 @@ export async function maybeHandleHubOpsCommand({ ctx, runtime, channelId }) {
           `ok: ${Boolean(health?.ok)}`,
           `service: ${String(health?.service ?? "-")}`,
           `botCount: ${Number(health?.botCount ?? 0)}`,
-          `webPort: ${String(health?.webPort ?? "-")}`
-        ].join("\n")
+          `webPort: ${String(health?.webPort ?? "-")}`,
+        ].join("\n"),
       );
     } catch (error) {
       await ctx.reply(`Health failed: ${sanitizeError(error)}`);
@@ -93,7 +94,7 @@ export async function maybeHandleHubOpsCommand({ ctx, runtime, channelId }) {
       step: "token",
       token: null,
       tokenInfo: null,
-      botId: null
+      botId: null,
     });
 
     await ctx.reply(
@@ -101,8 +102,8 @@ export async function maybeHandleHubOpsCommand({ ctx, runtime, channelId }) {
         "Create agent wizard started.",
         "Step 1: send Telegram bot token.",
         "Format: 123456789:ABC...",
-        "Use /cancel to stop."
-      ].join("\n")
+        "Use /cancel to stop.",
+      ].join("\n"),
     );
     return true;
   }
@@ -149,15 +150,17 @@ export async function maybeHandleHubOpsFollowUp({ ctx, runtime, channelId }) {
     createFlows.set(flowKey, flow);
 
     const suggestedBotId = suggestBotIdFromUsername(verification.username);
-    const suggestionText = suggestedBotId ? `Suggested id: ${suggestedBotId}` : "Suggested id: (none)";
+    const suggestionText = suggestedBotId
+      ? `Suggested id: ${suggestedBotId}`
+      : "Suggested id: (none)";
 
     await ctx.reply(
       [
         `Token valid for @${verification.username || "unknown"}.`,
         suggestionText,
         "Step 2: send agent id (letters/numbers/_/-).",
-        "You can also send: default"
-      ].join("\n")
+        "You can also send: default",
+      ].join("\n"),
     );
     return true;
   }
@@ -179,8 +182,8 @@ export async function maybeHandleHubOpsFollowUp({ ctx, runtime, channelId }) {
         "Step 3 confirm:",
         `agentId: ${flow.botId}`,
         `telegram: @${flow.tokenInfo?.username || "unknown"}`,
-        "Reply YES to create, or NO to cancel."
-      ].join("\n")
+        "Reply YES to create, or NO to cancel.",
+      ].join("\n"),
     );
     return true;
   }
@@ -202,17 +205,17 @@ export async function maybeHandleHubOpsFollowUp({ ctx, runtime, channelId }) {
       const result = await apiPost("/api/bots/create", {
         agent: buildTelegramAgentDefinition({
           botId: flow.botId,
-          token: flow.token
+          token: flow.token,
         }),
-        startIfEnabled: true
+        startIfEnabled: true,
       });
 
       createFlows.delete(flowKey);
       await ctx.reply(
         [
           `Agent created: ${String(result?.bot?.id ?? flow.botId)}`,
-          "Use /bots to manage policy, reset context, or delete."
-        ].join("\n")
+          "Use /bots to manage policy, reset context, or delete.",
+        ].join("\n"),
       );
       return true;
     } catch (error) {
@@ -276,7 +279,7 @@ export async function maybeHandleHubOpsCallback({ ctx }) {
     if (action.type === "open") {
       await renderBotActions(ctx, {
         sessionId: action.sessionId,
-        index: action.index
+        index: action.index,
       });
       await answerCallbackQuerySafe(ctx);
       return true;
@@ -291,13 +294,13 @@ export async function maybeHandleHubOpsCallback({ ctx }) {
 
       await apiPost(`/api/bots/${encodeURIComponent(botId)}/policy`, {
         sandboxMode: profile.sandboxMode,
-        approvalPolicy: profile.approvalPolicy
+        approvalPolicy: profile.approvalPolicy,
       });
 
       await renderBotActions(ctx, {
         sessionId: action.sessionId,
         index: action.index,
-        notice: `Policy updated: ${profile.label}`
+        notice: `Policy updated: ${profile.label}`,
       });
       await answerCallbackQuerySafe(ctx, "Policy updated");
       return true;
@@ -307,7 +310,7 @@ export async function maybeHandleHubOpsCallback({ ctx }) {
       await renderResetConfirm(ctx, {
         sessionId: action.sessionId,
         index: action.index,
-        botId
+        botId,
       });
       await answerCallbackQuerySafe(ctx);
       return true;
@@ -318,7 +321,7 @@ export async function maybeHandleHubOpsCallback({ ctx }) {
       await renderBotActions(ctx, {
         sessionId: action.sessionId,
         index: action.index,
-        notice: "Context reset completed."
+        notice: "Context reset completed.",
       });
       await answerCallbackQuerySafe(ctx, "Context reset");
       return true;
@@ -328,7 +331,7 @@ export async function maybeHandleHubOpsCallback({ ctx }) {
       await renderDeleteConfirm(ctx, {
         sessionId: action.sessionId,
         index: action.index,
-        botId
+        botId,
       });
       await answerCallbackQuerySafe(ctx);
       return true;
@@ -338,7 +341,7 @@ export async function maybeHandleHubOpsCallback({ ctx }) {
       await apiPost(`/api/bots/${encodeURIComponent(botId)}/delete`, { deleteMode: "soft" });
       await renderBotsMenu(ctx, {
         editMessage: true,
-        notice: `Agent deleted: ${botId}`
+        notice: `Agent deleted: ${botId}`,
       });
       await answerCallbackQuerySafe(ctx, "Agent deleted");
       return true;
@@ -348,15 +351,11 @@ export async function maybeHandleHubOpsCallback({ ctx }) {
     return true;
   } catch (error) {
     await answerCallbackQuerySafe(ctx, "Action failed");
-    await editMessageOrReply(
-      ctx,
-      `Action failed:\n${sanitizeError(error)}`,
-      {
-        reply_markup: {
-          inline_keyboard: [[{ text: "Back to bots", callback_data: "hub:back" }]]
-        }
-      }
-    );
+    await editMessageOrReply(ctx, `Action failed:\n${sanitizeError(error)}`, {
+      reply_markup: {
+        inline_keyboard: [[{ text: "Back to bots", callback_data: "hub:back" }]],
+      },
+    });
     return true;
   }
 }
@@ -372,7 +371,7 @@ function buildHelpText(runtimeName) {
     "/create_agent",
     "/cancel",
     "",
-    "For development tasks, send a normal message to the assistant."
+    "For development tasks, send a normal message to the assistant.",
   ].join("\n");
 }
 
@@ -424,16 +423,16 @@ async function renderBotsMenu(ctx, { editMessage = false, notice = "" } = {}) {
   if (editMessage) {
     await editMessageOrReply(ctx, lines.join("\n"), {
       reply_markup: {
-        inline_keyboard: keyboard
-      }
+        inline_keyboard: keyboard,
+      },
     });
     return;
   }
 
   await ctx.reply(lines.join("\n"), {
     reply_markup: {
-      inline_keyboard: keyboard
-    }
+      inline_keyboard: keyboard,
+    },
   });
 }
 
@@ -451,9 +450,10 @@ async function renderBotActions(ctx, { sessionId, index, notice = "" }) {
     return;
   }
 
-  const providerOptions = botState?.provider?.options && typeof botState.provider.options === "object"
-    ? botState.provider.options
-    : {};
+  const providerOptions =
+    botState?.provider?.options && typeof botState.provider.options === "object"
+      ? botState.provider.options
+      : {};
 
   const lines = [];
   if (notice) {
@@ -466,42 +466,50 @@ async function renderBotActions(ctx, { sessionId, index, notice = "" }) {
     `sandboxMode: ${String(providerOptions.sandboxMode ?? "-")}`,
     `approvalPolicy: ${String(providerOptions.approvalPolicy ?? "-")}`,
     "",
-    "Choose an action:"
+    "Choose an action:",
   );
 
   await editMessageOrReply(ctx, lines.join("\n"), {
     reply_markup: {
-      inline_keyboard: buildBotActionsKeyboard(sessionId, index)
-    }
+      inline_keyboard: buildBotActionsKeyboard(sessionId, index),
+    },
   });
 }
 
 async function renderResetConfirm(ctx, { sessionId, index, botId }) {
-  await editMessageOrReply(ctx, [`Reset context for '${botId}'?`, "This clears the current web thread context."].join("\n"), {
-    reply_markup: {
-      inline_keyboard: [
-        [
-          { text: "Confirm reset", callback_data: `hub:rc:${sessionId}:${index}` },
-          { text: "Cancel", callback_data: `hub:o:${sessionId}:${index}` }
+  await editMessageOrReply(
+    ctx,
+    [`Reset context for '${botId}'?`, "This clears the current web thread context."].join("\n"),
+    {
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: "Confirm reset", callback_data: `hub:rc:${sessionId}:${index}` },
+            { text: "Cancel", callback_data: `hub:o:${sessionId}:${index}` },
+          ],
+          [{ text: "Back to bots", callback_data: "hub:back" }],
         ],
-        [{ text: "Back to bots", callback_data: "hub:back" }]
-      ]
-    }
-  });
+      },
+    },
+  );
 }
 
 async function renderDeleteConfirm(ctx, { sessionId, index, botId }) {
-  await editMessageOrReply(ctx, [`Delete agent '${botId}'?`, "This stops and removes the agent from runtime."].join("\n"), {
-    reply_markup: {
-      inline_keyboard: [
-        [
-          { text: "Confirm delete", callback_data: `hub:dc:${sessionId}:${index}` },
-          { text: "Cancel", callback_data: `hub:o:${sessionId}:${index}` }
+  await editMessageOrReply(
+    ctx,
+    [`Delete agent '${botId}'?`, "This stops and removes the agent from runtime."].join("\n"),
+    {
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: "Confirm delete", callback_data: `hub:dc:${sessionId}:${index}` },
+            { text: "Cancel", callback_data: `hub:o:${sessionId}:${index}` },
+          ],
+          [{ text: "Back to bots", callback_data: "hub:back" }],
         ],
-        [{ text: "Back to bots", callback_data: "hub:back" }]
-      ]
-    }
-  });
+      },
+    },
+  );
 }
 
 function buildBotsMenuKeyboard(sessionId, bots) {
@@ -510,7 +518,9 @@ function buildBotsMenuKeyboard(sessionId, bots) {
   for (let index = 0; index < bots.length; index += 1) {
     const botState = bots[index];
     const status = botState.running ? "ON" : "OFF";
-    rows.push([{ text: `${botState.id} (${status})`, callback_data: `hub:o:${sessionId}:${index}` }]);
+    rows.push([
+      { text: `${botState.id} (${status})`, callback_data: `hub:o:${sessionId}:${index}` },
+    ]);
   }
 
   rows.push([{ text: "Refresh", callback_data: `hub:r:${sessionId}` }]);
@@ -522,15 +532,15 @@ function buildBotActionsKeyboard(sessionId, index) {
   return [
     [
       { text: "Policy Safe", callback_data: `hub:p:${sessionId}:${index}:safe` },
-      { text: "Policy Standard", callback_data: `hub:p:${sessionId}:${index}:standard` }
+      { text: "Policy Standard", callback_data: `hub:p:${sessionId}:${index}:standard` },
     ],
     [
       { text: "Policy Semi", callback_data: `hub:p:${sessionId}:${index}:semi_auto` },
-      { text: "Policy Full", callback_data: `hub:p:${sessionId}:${index}:full_auto` }
+      { text: "Policy Full", callback_data: `hub:p:${sessionId}:${index}:full_auto` },
     ],
     [{ text: "Reset Context", callback_data: `hub:ra:${sessionId}:${index}` }],
     [{ text: "Delete Agent", callback_data: `hub:da:${sessionId}:${index}` }],
-    [{ text: "Back to bots", callback_data: "hub:back" }]
+    [{ text: "Back to bots", callback_data: "hub:back" }],
   ];
 }
 
@@ -551,7 +561,7 @@ function createMenuSession(chatId, bots) {
   menuSessions.set(sessionId, {
     chatId,
     createdAt: Date.now(),
-    botIds: bots.map((entry) => String(entry?.id ?? "").trim()).filter(Boolean)
+    botIds: bots.map((entry) => String(entry?.id ?? "").trim()).filter(Boolean),
   });
 
   return sessionId;
@@ -608,11 +618,14 @@ function parseMenuAction(rawData) {
   if (kind === "r" && parts.length === 3) {
     return {
       type: "refresh",
-      sessionId: parts[2]
+      sessionId: parts[2],
     };
   }
 
-  if ((kind === "o" || kind === "ra" || kind === "rc" || kind === "da" || kind === "dc") && parts.length === 4) {
+  if (
+    (kind === "o" || kind === "ra" || kind === "rc" || kind === "da" || kind === "dc") &&
+    parts.length === 4
+  ) {
     const index = parseMenuIndex(parts[3]);
     if (index === null) {
       return null;
@@ -623,19 +636,21 @@ function parseMenuAction(rawData) {
       ra: "reset_ask",
       rc: "reset_confirm",
       da: "delete_ask",
-      dc: "delete_confirm"
+      dc: "delete_confirm",
     };
 
     return {
       type: mapping[kind],
       sessionId: parts[2],
-      index
+      index,
     };
   }
 
   if (kind === "p" && parts.length === 5) {
     const index = parseMenuIndex(parts[3]);
-    const profileId = String(parts[4] ?? "").trim().toLowerCase();
+    const profileId = String(parts[4] ?? "")
+      .trim()
+      .toLowerCase();
     if (index === null || !profileId) {
       return null;
     }
@@ -644,7 +659,7 @@ function parseMenuAction(rawData) {
       type: "policy",
       sessionId: parts[2],
       index,
-      profileId
+      profileId,
     };
   }
 
@@ -660,7 +675,10 @@ function parseMenuIndex(value) {
 }
 
 function extractCommand(text) {
-  const token = String(text ?? "").trim().split(/\s+/)[0] ?? "";
+  const token =
+    String(text ?? "")
+      .trim()
+      .split(/\s+/)[0] ?? "";
   if (!token.startsWith("/")) {
     return "";
   }
@@ -686,12 +704,17 @@ function normalizeBotIdInput(value, suggested) {
 }
 
 function suggestBotIdFromUsername(username) {
-  const raw = String(username ?? "").trim().toLowerCase();
+  const raw = String(username ?? "")
+    .trim()
+    .toLowerCase();
   if (!raw) {
     return null;
   }
 
-  const candidate = raw.replace(/[^a-z0-9_-]/g, "_").replace(/^_+|_+$/g, "").slice(0, 64);
+  const candidate = raw
+    .replace(/[^a-z0-9_-]/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 64);
   if (!candidate || !BOT_ID_PATTERN.test(candidate)) {
     return null;
   }
@@ -712,17 +735,17 @@ function buildTelegramAgentDefinition({ botId, token }) {
       kind: "codex",
       options: {
         sandboxMode: "workspace-write",
-        approvalPolicy: "on-request"
-      }
+        approvalPolicy: "on-request",
+      },
     },
     channels: [
       {
         kind: "telegram",
         id: `telegram_${safeId}`,
-        token: String(token ?? "").trim()
-      }
+        token: String(token ?? "").trim(),
+      },
     ],
-    capabilities: []
+    capabilities: [],
   };
 }
 
@@ -772,8 +795,8 @@ async function apiGet(endpoint) {
   const response = await fetch(`${getEngineBaseUrl()}${endpoint}`, {
     method: "GET",
     headers: {
-      Accept: "application/json"
-    }
+      Accept: "application/json",
+    },
   });
   return parseJsonResponse(response);
 }
@@ -783,9 +806,9 @@ async function apiPost(endpoint, body) {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Accept: "application/json"
+      Accept: "application/json",
     },
-    body: JSON.stringify(body ?? {})
+    body: JSON.stringify(body ?? {}),
   });
   return parseJsonResponse(response);
 }
@@ -813,8 +836,8 @@ async function verifyTelegramToken(token) {
       method: "GET",
       signal: controller.signal,
       headers: {
-        Accept: "application/json"
-      }
+        Accept: "application/json",
+      },
     });
 
     const payload = await response.json().catch(() => null);
@@ -822,27 +845,27 @@ async function verifyTelegramToken(token) {
       const reason = String(payload?.description ?? `HTTP ${response.status}`).trim();
       return {
         ok: false,
-        error: reason || "Telegram getMe failed."
+        error: reason || "Telegram getMe failed.",
       };
     }
 
     return {
       ok: true,
       id: payload.result.id,
-      username: String(payload.result.username ?? "").trim() || null
+      username: String(payload.result.username ?? "").trim() || null,
     };
   } catch (error) {
     const reason = sanitizeError(error);
     if (reason.toLowerCase().includes("aborted")) {
       return {
         ok: false,
-        error: "Telegram verification timed out."
+        error: "Telegram verification timed out.",
       };
     }
 
     return {
       ok: false,
-      error: reason
+      error: reason,
     };
   } finally {
     clearTimeout(timer);

@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { TelegramChannel } from "./telegram-channel.js";
 import { WhatsAppChannel } from "./whatsapp-channel.js";
 
@@ -9,14 +10,14 @@ export function createChannelAdapter({ channelConfig, runtime }) {
   if (kind === "telegram") {
     return new TelegramChannel({
       channelConfig,
-      runtime
+      runtime,
     });
   }
 
   if (kind === "whatsapp") {
     return new WhatsAppChannel({
       channelConfig,
-      runtime
+      runtime,
     });
   }
 

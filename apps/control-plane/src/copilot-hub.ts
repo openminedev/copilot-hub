@@ -1,39 +1,50 @@
+// @ts-nocheck
 import path from "node:path";
 import { BotRuntime } from "@copilot-hub/core/bot-runtime";
 import { config } from "./config.js";
 import { assertWorkspaceAllowed } from "@copilot-hub/core/workspace-policy";
 import { createChannelAdapter } from "./channels/channel-factory.js";
 
-const tokenEnvName = String(process.env.HUB_TELEGRAM_TOKEN_ENV ?? "HUB_TELEGRAM_TOKEN").trim() || "HUB_TELEGRAM_TOKEN";
+const tokenEnvName =
+  String(process.env.HUB_TELEGRAM_TOKEN_ENV ?? "HUB_TELEGRAM_TOKEN").trim() || "HUB_TELEGRAM_TOKEN";
 const hubToken = String(process.env[tokenEnvName] ?? "").trim();
 if (!hubToken) {
   throw new Error(
     [
       `Hub Telegram token is missing (${tokenEnvName}).`,
-      "Set this token to start copilot-hub."
-    ].join("\n")
+      "Set this token to start copilot-hub.",
+    ].join("\n"),
   );
 }
 
 const hubId = String(process.env.HUB_ID ?? "copilot_hub").trim() || "copilot_hub";
 const hubName = String(process.env.HUB_NAME ?? "Copilot Hub").trim() || "Copilot Hub";
-const hubWorkspaceRootRaw = path.resolve(String(process.env.HUB_WORKSPACE_ROOT ?? config.defaultWorkspaceRoot));
+const hubWorkspaceRootRaw = path.resolve(
+  String(process.env.HUB_WORKSPACE_ROOT ?? config.defaultWorkspaceRoot),
+);
 const hubWorkspaceRoot = assertWorkspaceAllowed({
   workspaceRoot: hubWorkspaceRootRaw,
   policy: config.workspacePolicy,
-  label: "HUB_WORKSPACE_ROOT"
+  label: "HUB_WORKSPACE_ROOT",
 });
-const hubDataDir = path.resolve(String(process.env.HUB_DATA_DIR ?? path.join(config.dataDir, "copilot_hub")));
+const hubDataDir = path.resolve(
+  String(process.env.HUB_DATA_DIR ?? path.join(config.dataDir, "copilot_hub")),
+);
 const hubThreadMode = normalizeThreadMode(process.env.HUB_THREAD_MODE ?? "per_chat");
-const hubSharedThreadId = String(process.env.HUB_SHARED_THREAD_ID ?? "shared-copilot-hub").trim() || "shared-copilot-hub";
+const hubSharedThreadId =
+  String(process.env.HUB_SHARED_THREAD_ID ?? "shared-copilot-hub").trim() || "shared-copilot-hub";
 const allowedChatIds = parseCsvSet(process.env.HUB_ALLOWED_CHAT_IDS ?? "");
 const hubImmutableCore = parseBoolean(process.env.HUB_IMMUTABLE_CORE ?? "true");
-let hubSandboxMode = String(process.env.HUB_CODEX_SANDBOX ?? config.codexSandbox ?? "workspace-write").trim();
-let hubApprovalPolicy = String(process.env.HUB_CODEX_APPROVAL_POLICY ?? config.codexApprovalPolicy ?? "on-request").trim();
+let hubSandboxMode = String(
+  process.env.HUB_CODEX_SANDBOX ?? config.codexSandbox ?? "workspace-write",
+).trim();
+let hubApprovalPolicy = String(
+  process.env.HUB_CODEX_APPROVAL_POLICY ?? config.codexApprovalPolicy ?? "on-request",
+).trim();
 
 if (hubImmutableCore && hubSandboxMode === "danger-full-access" && hubApprovalPolicy === "never") {
   console.warn(
-    "HUB_IMMUTABLE_CORE=true: forcing safer hub policy (workspace-write + on-request) instead of danger-full-access + never."
+    "HUB_IMMUTABLE_CORE=true: forcing safer hub policy (workspace-write + on-request) instead of danger-full-access + never.",
   );
   hubSandboxMode = "workspace-write";
   hubApprovalPolicy = "on-request";
@@ -53,28 +64,28 @@ const runtime = new BotRuntime({
       kind: config.defaultProviderKind,
       options: {
         sandboxMode: hubSandboxMode,
-        approvalPolicy: hubApprovalPolicy
-      }
+        approvalPolicy: hubApprovalPolicy,
+      },
     },
     kernelAccess: {
       enabled: false,
       allowedActions: [],
-      allowedChatIds: []
+      allowedChatIds: [],
     },
     channels: [
       {
         kind: "telegram",
         id: "telegram_copilot_hub",
         token: hubToken,
-        allowedChatIds: [...allowedChatIds]
-      }
+        allowedChatIds: [...allowedChatIds],
+      },
     ],
-    capabilities: []
+    capabilities: [],
   },
   providerDefaults: config.providerDefaults,
   turnActivityTimeoutMs: config.turnActivityTimeoutMs,
   maxMessages: config.maxMessages,
-  channelAdapterFactory: createChannelAdapter
+  channelAdapterFactory: createChannelAdapter,
 });
 
 let shuttingDown = false;
@@ -132,7 +143,7 @@ function parseCsvSet(value) {
     String(value ?? "")
       .split(",")
       .map((entry) => entry.trim())
-      .filter(Boolean)
+      .filter(Boolean),
   );
 }
 

@@ -1,3 +1,4 @@
+// @ts-nocheck
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
@@ -42,11 +43,10 @@ async function bootstrap() {
       bootstrapTelegramToken: config.bootstrapTelegramToken,
       defaultProviderKind: config.defaultProviderKind,
       workspacePolicy: config.workspacePolicy,
-      resolveSecret: (name) => secretStore.getSecret(name)
+      resolveSecret: (name) => secretStore.getSecret(name),
     });
 
     const runtimeBots = registry.bots.filter((bot) => bot.enabled !== false);
-
 
     botManager = new BotManager({
       botDefinitions: runtimeBots,
@@ -59,7 +59,7 @@ async function bootstrap() {
       botDataRootDir: path.join(config.dataDir, "bots"),
       heartbeatEnabled: config.agentHeartbeatEnabled,
       heartbeatIntervalMs: config.agentHeartbeatIntervalMs,
-      heartbeatTimeoutMs: config.agentHeartbeatTimeoutMs
+      heartbeatTimeoutMs: config.agentHeartbeatTimeoutMs,
     });
 
     controlPlane = new KernelControlPlane({
@@ -75,15 +75,15 @@ async function bootstrap() {
         bootstrapTelegramToken: config.bootstrapTelegramToken,
         defaultProviderKind: config.defaultProviderKind,
         workspacePolicy: config.workspacePolicy,
-        resolveSecret: (name) => secretStore.getSecret(name)
-      }
+        resolveSecret: (name) => secretStore.getSecret(name),
+      },
     });
     botManager.setKernelActionHandler((request) => controlPlane.handleAgentAction(request));
 
     const app = buildApiApp({
       botManager,
       controlPlane,
-      registryFilePath: registry.filePath
+      registryFilePath: registry.filePath,
     });
 
     const started = await startWebServer({
@@ -91,7 +91,7 @@ async function bootstrap() {
       host: config.webHost,
       basePort: config.webPort,
       autoIncrement: config.webPortAutoIncrement,
-      maxAttempts: config.webPortSearchMax
+      maxAttempts: config.webPortSearchMax,
     });
     server = started.server;
     activeWebPort = started.port;
@@ -99,7 +99,7 @@ async function bootstrap() {
       explicit: config.webPublicBaseUrlExplicit,
       configuredBaseUrl: config.webPublicBaseUrl,
       host: config.webHost,
-      port: activeWebPort
+      port: activeWebPort,
     });
     botManager.setWebPublicBaseUrl(runtimeWebPublicBaseUrl);
 
@@ -140,16 +140,19 @@ function buildApiApp({ botManager, controlPlane, registryFilePath }) {
       heartbeatIntervalMs: config.agentHeartbeatIntervalMs,
       heartbeatTimeoutMs: config.agentHeartbeatTimeoutMs,
       registryFile: registryFilePath,
-      secretStoreFile: config.secretStoreFilePath
+      secretStoreFile: config.secretStoreFilePath,
     });
   });
 
   app.get(
     "/api/extensions/contract",
     wrapAsync(async (req, res) => {
-      const contract = await controlPlane.runSystemAction(CONTROL_ACTIONS.EXTENSIONS_CONTRACT_GET, {});
+      const contract = await controlPlane.runSystemAction(
+        CONTROL_ACTIONS.EXTENSIONS_CONTRACT_GET,
+        {},
+      );
       res.json(contract);
-    })
+    }),
   );
 
   app.get(
@@ -157,7 +160,7 @@ function buildApiApp({ botManager, controlPlane, registryFilePath }) {
     wrapAsync(async (req, res) => {
       const bots = await botManager.listBotsLive();
       res.json({ bots });
-    })
+    }),
   );
 
   app.post(
@@ -165,10 +168,10 @@ function buildApiApp({ botManager, controlPlane, registryFilePath }) {
     wrapAsync(async (req, res) => {
       const result = await controlPlane.runSystemAction(CONTROL_ACTIONS.BOTS_CREATE, {
         agent: req.body?.agent,
-        startIfEnabled: req.body?.startIfEnabled !== false
+        startIfEnabled: req.body?.startIfEnabled !== false,
       });
       res.json(result);
-    })
+    }),
   );
 
   app.post(
@@ -178,10 +181,10 @@ function buildApiApp({ botManager, controlPlane, registryFilePath }) {
       const deleteMode = parseDeleteModeFromRequest(req.body);
       const deleted = await controlPlane.runSystemAction(CONTROL_ACTIONS.BOTS_DELETE, {
         botId,
-        deleteMode
+        deleteMode,
       });
       res.json(deleted);
-    })
+    }),
   );
 
   app.post(
@@ -196,18 +199,22 @@ function buildApiApp({ botManager, controlPlane, registryFilePath }) {
 
       const result = await controlPlane.runSystemAction(CONTROL_ACTIONS.BOTS_SET_PROJECT, {
         botId,
-        projectName
+        projectName,
       });
       res.json(result);
-    })
+    }),
   );
 
   app.post(
     "/api/bots/:botId/policy",
     wrapAsync(async (req, res) => {
       const botId = String(req.params.botId ?? "").trim();
-      const sandboxMode = String(req.body?.sandboxMode ?? "").trim().toLowerCase();
-      const approvalPolicy = String(req.body?.approvalPolicy ?? "").trim().toLowerCase();
+      const sandboxMode = String(req.body?.sandboxMode ?? "")
+        .trim()
+        .toLowerCase();
+      const approvalPolicy = String(req.body?.approvalPolicy ?? "")
+        .trim()
+        .toLowerCase();
       if (!sandboxMode) {
         res.status(400).json({ error: "Field 'sandboxMode' is required." });
         return;
@@ -220,19 +227,18 @@ function buildApiApp({ botManager, controlPlane, registryFilePath }) {
       const result = await controlPlane.runSystemAction(CONTROL_ACTIONS.BOTS_SET_POLICY, {
         botId,
         sandboxMode,
-        approvalPolicy
+        approvalPolicy,
       });
       res.json(result);
-    })
+    }),
   );
-
 
   app.get(
     "/api/projects",
     wrapAsync(async (req, res) => {
       const projects = await controlPlane.runSystemAction(CONTROL_ACTIONS.PROJECTS_LIST, {});
       res.json(projects);
-    })
+    }),
   );
 
   app.post(
@@ -246,7 +252,7 @@ function buildApiApp({ botManager, controlPlane, registryFilePath }) {
 
       const created = await controlPlane.runSystemAction(CONTROL_ACTIONS.PROJECTS_CREATE, { name });
       res.json(created);
-    })
+    }),
   );
 
   app.post(
@@ -257,9 +263,9 @@ function buildApiApp({ botManager, controlPlane, registryFilePath }) {
       const bot = await botManager.getBotStatus(botId);
       res.json({
         bot,
-        reset: true
+        reset: true,
       });
-    })
+    }),
   );
 
   app.get(
@@ -269,7 +275,7 @@ function buildApiApp({ botManager, controlPlane, registryFilePath }) {
       const threadId = String(req.query.threadId ?? "").trim() || undefined;
       const approvals = await botManager.listBotApprovals(botId, threadId);
       res.json({ approvals });
-    })
+    }),
   );
 
   app.post(
@@ -291,10 +297,10 @@ function buildApiApp({ botManager, controlPlane, registryFilePath }) {
       const resolved = await botManager.resolveBotApproval(botId, {
         threadId,
         approvalId,
-        decision
+        decision,
       });
       res.json({ approval: resolved });
-    })
+    }),
   );
 
   app.get(
@@ -302,10 +308,10 @@ function buildApiApp({ botManager, controlPlane, registryFilePath }) {
     wrapAsync(async (req, res) => {
       const botId = String(req.params.botId ?? "").trim();
       const result = await controlPlane.runSystemAction(CONTROL_ACTIONS.BOTS_CAPABILITIES_LIST, {
-        botId
+        botId,
       });
       res.json(result);
-    })
+    }),
   );
 
   app.post(
@@ -313,10 +319,10 @@ function buildApiApp({ botManager, controlPlane, registryFilePath }) {
     wrapAsync(async (req, res) => {
       const botId = String(req.params.botId ?? "").trim();
       const result = await controlPlane.runSystemAction(CONTROL_ACTIONS.BOTS_CAPABILITIES_RELOAD, {
-        botId
+        botId,
       });
       res.json(result);
-    })
+    }),
   );
 
   app.post(
@@ -330,15 +336,17 @@ function buildApiApp({ botManager, controlPlane, registryFilePath }) {
         return;
       }
 
-      const result = await controlPlane.runSystemAction(CONTROL_ACTIONS.BOTS_CAPABILITIES_SCAFFOLD, {
-        botId,
-        capabilityId,
-        capabilityName: capabilityName || undefined
-      });
+      const result = await controlPlane.runSystemAction(
+        CONTROL_ACTIONS.BOTS_CAPABILITIES_SCAFFOLD,
+        {
+          botId,
+          capabilityId,
+          capabilityName: capabilityName || undefined,
+        },
+      );
       res.json(result);
-    })
+    }),
   );
-
 
   app.use((error, req, res, _next) => {
     const message = sanitizeError(error);
@@ -387,7 +395,9 @@ async function startWebServer({ app, host, basePort, autoIncrement, maxAttempts 
     }
   }
 
-  throw new Error(`Could not find a free web port after ${maxAttempts} attempts starting from ${basePort}.`);
+  throw new Error(
+    `Could not find a free web port after ${maxAttempts} attempts starting from ${basePort}.`,
+  );
 }
 
 function listenOnce({ app, host, port }) {
@@ -409,7 +419,6 @@ async function shutdown(exitCode) {
 }
 
 async function cleanupBeforeExit() {
-
   if (botManager) {
     await botManager.shutdownAll();
   }
@@ -437,13 +446,3 @@ function parseDeleteModeFromRequest(body) {
   }
   return "soft";
 }
-
-
-
-
-
-
-
-
-
-

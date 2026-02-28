@@ -7,7 +7,7 @@ It runs worker agents, channels, sessions, capabilities, and the runtime HTTP AP
 
 ## Main components
 
-- Runtime kernel (`src/index.js`)
+- Runtime kernel (`src/index.ts`)
 - Bot manager + worker supervisors
 - Provider adapters (Codex, future providers)
 - Channel adapters (Telegram)
