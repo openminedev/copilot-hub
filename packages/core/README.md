@@ -8,5 +8,6 @@ Current modules:
 - `thread-id`: canonical thread id validation.
 - `project-fingerprint`: stable fingerprint generator for runtime session isolation.
 - `instance-lock`: single-instance process lock helper.
+- `state-store`: persisted session/thread state helper shared by runtime apps.
 
 Use this package for cross-app primitives that must stay consistent across planes.

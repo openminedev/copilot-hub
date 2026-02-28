@@ -4,8 +4,8 @@ import { createChannelAdapter } from "./channels/channel-factory.js";
 import { CapabilityManager } from "./kernel/capability-manager.js";
 import { KERNEL_VERSION } from "./kernel/kernel-version.js";
 import { createProjectFingerprint } from "@copilot-hub/core/project-fingerprint";
+import { JsonStateStore } from "@copilot-hub/core/state-store";
 import { createAssistantProvider } from "./providers/provider-factory.js";
-import { JsonStateStore } from "./state-store.js";
 
 const DEFAULT_WEB_THREAD_SUFFIX = "web-main";
 

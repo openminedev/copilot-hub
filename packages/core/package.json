@@ -33,6 +33,10 @@
     "./instance-lock": {
       "types": "./dist/instance-lock.d.ts",
       "import": "./dist/instance-lock.js"
+    },
+    "./state-store": {
+      "types": "./dist/state-store.d.ts",
+      "import": "./dist/state-store.js"
     }
   },
   "files": [

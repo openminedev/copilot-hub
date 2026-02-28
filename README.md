@@ -96,18 +96,13 @@ npm run start
 5. Enter a unique username ending with `bot` (example: `my_copilot_hub_bot`).
 6. BotFather returns a token like `123456789:AA...`.
 
-Use this token in `apps/control-plane/.env`:
-
-```env
-HUB_TELEGRAM_TOKEN_ENV=HUB_TELEGRAM_TOKEN
-HUB_TELEGRAM_TOKEN=<PASTE_TOKEN_HERE>
-```
-
-You can either edit `.env` directly or run:
+Now run:
 
 ```bash
 npm run configure
 ```
+
+When prompted, paste this token.
 
 ### 2) Start Copilot Hub
 
@@ -140,22 +135,11 @@ You need one Telegram bot token per runtime agent.
 
 After creation, use `/bots` in the hub chat to manage policy, reset context, or delete an agent.
 
-### 4) Optional: restrict allowed Telegram chats
-
-To find your chat id, use `/whoami` in a bot chat.
-
-Then you can set:
-
-- `HUB_ALLOWED_CHAT_IDS` in `apps/control-plane/.env`
-- `TELEGRAM_ALLOWED_CHAT_IDS` in `apps/agent-engine/.env`
-
-Use comma-separated ids when needed.
-
-### 5) Token safety
+### 4) Token safety
 
 - Never commit real bot tokens.
 - If a token is leaked, regenerate it in `@BotFather` using `/revoke`.
-- Keep `.env`, `data/`, and `logs/` local.
+- Keep local runtime files (`data/`, `logs/`) private.
 
 ## Startup troubleshooting
 
