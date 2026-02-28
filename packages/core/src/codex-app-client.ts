@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
@@ -15,7 +16,10 @@ export class CodexAppClient extends EventEmitter {
     this.cwd = path.resolve(String(cwd));
     this.sandboxMode = normalizeSandboxMode(sandboxMode);
     this.approvalPolicy = normalizeApprovalPolicy(approvalPolicy);
-    this.turnActivityTimeoutMs = normalizeTimeout(turnActivityTimeoutMs, DEFAULT_TURN_ACTIVITY_TIMEOUT_MS);
+    this.turnActivityTimeoutMs = normalizeTimeout(
+      turnActivityTimeoutMs,
+      DEFAULT_TURN_ACTIVITY_TIMEOUT_MS,
+    );
 
     this.child = null;
     this.reader = null;
@@ -98,7 +102,7 @@ export class CodexAppClient extends EventEmitter {
   listPendingApprovals({ threadId } = {}) {
     const normalizedThreadId = threadId ? String(threadId) : null;
     const values = [...this.pendingApprovals.values()].filter((entry) =>
-      normalizedThreadId ? entry.threadId === normalizedThreadId : true
+      normalizedThreadId ? entry.threadId === normalizedThreadId : true,
     );
     values.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
     return values.map((entry) => ({ ...entry }));
@@ -119,15 +123,18 @@ export class CodexAppClient extends EventEmitter {
     await this.#sendResponse({
       id: approval.serverRequestId,
       result: {
-        decision: normalizedDecision
-      }
+        decision: normalizedDecision,
+      },
     });
 
     this.pendingApprovals.delete(normalizedApprovalId);
-    this.#resumeTurnAfterApproval(makeTurnKey(approval.threadId, approval.turnId), normalizedApprovalId);
+    this.#resumeTurnAfterApproval(
+      makeTurnKey(approval.threadId, approval.turnId),
+      normalizedApprovalId,
+    );
     return {
       ...approval,
-      decision: normalizedDecision
+      decision: normalizedDecision,
     };
   }
 
@@ -144,27 +151,27 @@ export class CodexAppClient extends EventEmitter {
     if (!activeTurnId) {
       return {
         interrupted: false,
-        reason: "no_active_turn"
+        reason: "no_active_turn",
       };
     }
 
     const attempts = [
       {
         method: "turn/cancel",
-        params: { threadId: normalizedThreadId, turnId: activeTurnId }
+        params: { threadId: normalizedThreadId, turnId: activeTurnId },
       },
       {
         method: "turn/cancel",
-        params: { threadId: normalizedThreadId }
+        params: { threadId: normalizedThreadId },
       },
       {
         method: "turn/interrupt",
-        params: { threadId: normalizedThreadId, turnId: activeTurnId }
+        params: { threadId: normalizedThreadId, turnId: activeTurnId },
       },
       {
         method: "turn/interrupt",
-        params: { threadId: normalizedThreadId }
-      }
+        params: { threadId: normalizedThreadId },
+      },
     ];
 
     let lastError = null;
@@ -174,7 +181,7 @@ export class CodexAppClient extends EventEmitter {
         return {
           interrupted: true,
           method: attempt.method,
-          turnId: activeTurnId
+          turnId: activeTurnId,
         };
       } catch (error) {
         lastError = error;
@@ -191,17 +198,23 @@ export class CodexAppClient extends EventEmitter {
       interrupted: true,
       method: "process_restart",
       turnId: activeTurnId,
-      warning: lastError ? sanitizeError(lastError) : null
+      warning: lastError ? sanitizeError(lastError) : null,
     };
   }
 
-  async sendTurn({ threadId, prompt, inputItems = [], turnActivityTimeoutMs, onThreadReady = null }) {
+  async sendTurn({
+    threadId,
+    prompt,
+    inputItems = [],
+    turnActivityTimeoutMs,
+    onThreadReady = null,
+  }) {
     await this.ensureStarted();
 
     const text = String(prompt ?? "").trim();
     const normalizedInputItems = normalizeTurnInputItems({
       prompt: text,
-      inputItems
+      inputItems,
     });
 
     const resolvedThreadId = await this.#ensureThread(threadId);
@@ -212,13 +225,13 @@ export class CodexAppClient extends EventEmitter {
         this.emit("warning", {
           type: "thread_ready_callback_failed",
           threadId: resolvedThreadId,
-          error: sanitizeError(error)
+          error: sanitizeError(error),
         });
       }
     }
     const response = await this.#sendRequest("turn/start", {
       threadId: resolvedThreadId,
-      input: normalizedInputItems
+      input: normalizedInputItems,
     });
 
     const turnId = String(response?.turn?.id ?? "").trim();
@@ -227,7 +240,7 @@ export class CodexAppClient extends EventEmitter {
     }
     this.activeTurnByThread.set(resolvedThreadId, {
       turnId,
-      startedAt: new Date().toISOString()
+      startedAt: new Date().toISOString(),
     });
 
     try {
@@ -248,7 +261,7 @@ export class CodexAppClient extends EventEmitter {
       return {
         threadId: resolvedThreadId,
         turnId,
-        assistantText
+        assistantText,
       };
     } finally {
       const current = this.activeTurnByThread.get(resolvedThreadId);
@@ -268,7 +281,7 @@ export class CodexAppClient extends EventEmitter {
     const child = spawn(this.codexBin, args, {
       windowsHide: true,
       shell: false,
-      env
+      env,
     });
 
     this.child = child;
@@ -276,7 +289,7 @@ export class CodexAppClient extends EventEmitter {
 
     this.reader = readline.createInterface({
       input: child.stdout,
-      crlfDelay: Infinity
+      crlfDelay: Infinity,
     });
     this.reader.on("line", (line) => {
       this.#handleStdoutLine(line);
@@ -300,11 +313,11 @@ export class CodexAppClient extends EventEmitter {
       clientInfo: {
         name: "telegram-codex-bridge",
         title: "Telegram Codex Bridge",
-        version: "0.2.0"
+        version: "0.2.0",
       },
       capabilities: {
-        experimentalApi: true
-      }
+        experimentalApi: true,
+      },
     });
     await this.#sendNotification("initialized");
   }
@@ -325,14 +338,14 @@ export class CodexAppClient extends EventEmitter {
           threadId: previousThreadId,
           cwd: normalizeCliPath(this.cwd),
           approvalPolicy: this.approvalPolicy,
-          sandbox: this.sandboxMode
+          sandbox: this.sandboxMode,
         });
         return previousThreadId;
       } catch (error) {
         this.emit("warning", {
           type: "thread_resume_failed",
           threadId: previousThreadId,
-          error: sanitizeError(error)
+          error: sanitizeError(error),
         });
       }
     }
@@ -341,7 +354,7 @@ export class CodexAppClient extends EventEmitter {
       cwd: normalizeCliPath(this.cwd),
       approvalPolicy: this.approvalPolicy,
       sandbox: this.sandboxMode,
-      experimentalRawEvents: false
+      experimentalRawEvents: false,
     });
     const nextThreadId = String(started?.thread?.id ?? "").trim();
     if (!nextThreadId) {
@@ -362,7 +375,7 @@ export class CodexAppClient extends EventEmitter {
 
     const read = await this.#sendRequest("thread/read", {
       threadId,
-      includeTurns: true
+      includeTurns: true,
     });
     const turns = Array.isArray(read?.thread?.turns) ? read.thread.turns : [];
     const targetTurn = turns.find((entry) => entry.id === turnId);
@@ -396,7 +409,7 @@ export class CodexAppClient extends EventEmitter {
         timeoutMs,
         timer: null,
         waitingForApproval: false,
-        pendingApprovalIds: new Set()
+        pendingApprovalIds: new Set(),
       };
       this.turnWaiters.set(key, waiter);
       this.#armTurnActivityTimeout(key);
@@ -422,7 +435,9 @@ export class CodexAppClient extends EventEmitter {
     }
     waiter.timer = setTimeout(() => {
       this.turnWaiters.delete(turnKey);
-      waiter.reject(new Error(`Turn ${waiter.turnId || "<unknown>"} inactive for ${waiter.timeoutMs}ms.`));
+      waiter.reject(
+        new Error(`Turn ${waiter.turnId || "<unknown>"} inactive for ${waiter.timeoutMs}ms.`),
+      );
     }, waiter.timeoutMs);
   }
 
@@ -480,7 +495,7 @@ export class CodexAppClient extends EventEmitter {
     const message = {
       jsonrpc: "2.0",
       id: requestId,
-      method
+      method,
     };
     if (params !== undefined) {
       message.params = params;
@@ -496,7 +511,7 @@ export class CodexAppClient extends EventEmitter {
         method,
         resolve,
         reject,
-        timer
+        timer,
       });
 
       try {
@@ -513,7 +528,7 @@ export class CodexAppClient extends EventEmitter {
     await this.ensureStarted();
     const message = {
       jsonrpc: "2.0",
-      method
+      method,
     };
     if (params !== undefined) {
       message.params = params;
@@ -525,7 +540,7 @@ export class CodexAppClient extends EventEmitter {
     await this.ensureStarted();
     const message = {
       jsonrpc: "2.0",
-      id
+      id,
     };
     if (error) {
       message.error = error;
@@ -555,12 +570,23 @@ export class CodexAppClient extends EventEmitter {
       return;
     }
 
-    if (message && typeof message === "object" && "id" in message && ("result" in message || "error" in message) && !message.method) {
+    if (
+      message &&
+      typeof message === "object" &&
+      "id" in message &&
+      ("result" in message || "error" in message) &&
+      !message.method
+    ) {
       this.#handleResponse(message);
       return;
     }
 
-    if (message && typeof message === "object" && "id" in message && typeof message.method === "string") {
+    if (
+      message &&
+      typeof message === "object" &&
+      "id" in message &&
+      typeof message.method === "string"
+    ) {
       void this.#handleServerRequest(message);
       return;
     }
@@ -579,7 +605,10 @@ export class CodexAppClient extends EventEmitter {
     clearTimeout(pending.timer);
 
     if (message.error) {
-      const details = typeof message.error?.message === "string" ? message.error.message : JSON.stringify(message.error);
+      const details =
+        typeof message.error?.message === "string"
+          ? message.error.message
+          : JSON.stringify(message.error);
       pending.reject(new Error(details || `Codex request '${pending.method}' failed.`));
       return;
     }
@@ -590,13 +619,17 @@ export class CodexAppClient extends EventEmitter {
   async #handleServerRequest(message) {
     const method = String(message.method);
 
-    if (method === "item/commandExecution/requestApproval" || method === "item/fileChange/requestApproval") {
+    if (
+      method === "item/commandExecution/requestApproval" ||
+      method === "item/fileChange/requestApproval"
+    ) {
       const params = message.params ?? {};
       this.#touchTurn(params.threadId, params.turnId);
       const approval = {
         id: createApprovalId(),
         serverRequestId: message.id,
-        kind: method === "item/commandExecution/requestApproval" ? "commandExecution" : "fileChange",
+        kind:
+          method === "item/commandExecution/requestApproval" ? "commandExecution" : "fileChange",
         method,
         threadId: String(params.threadId ?? ""),
         turnId: String(params.turnId ?? ""),
@@ -605,7 +638,7 @@ export class CodexAppClient extends EventEmitter {
         cwd: typeof params.cwd === "string" ? params.cwd : null,
         reason: typeof params.reason === "string" ? params.reason : null,
         commandActions: Array.isArray(params.commandActions) ? params.commandActions : null,
-        createdAt: new Date().toISOString()
+        createdAt: new Date().toISOString(),
       };
       this.pendingApprovals.set(approval.id, approval);
       this.#pauseTurnForApproval(makeTurnKey(approval.threadId, approval.turnId), approval.id);
@@ -617,8 +650,8 @@ export class CodexAppClient extends EventEmitter {
       id: message.id,
       error: {
         code: -32601,
-        message: `Method '${method}' is not supported by telegram-codex-bridge.`
-      }
+        message: `Method '${method}' is not supported by telegram-codex-bridge.`,
+      },
     });
   }
 
@@ -650,7 +683,7 @@ export class CodexAppClient extends EventEmitter {
     if (method === "turn/completed") {
       const turn = params.turn;
       const key = makeTurnKey(params.threadId, turn?.id);
-       this.#clearTurnApprovalTracking(key);
+      this.#clearTurnApprovalTracking(key);
       const waiter = this.turnWaiters.get(key);
       if (waiter) {
         this.turnWaiters.delete(key);
@@ -665,7 +698,7 @@ export class CodexAppClient extends EventEmitter {
     if (method === "error") {
       this.emit("warning", {
         type: "notification_error",
-        error: params?.message ? String(params.message) : "Unknown app-server error notification."
+        error: params?.message ? String(params.message) : "Unknown app-server error notification.",
       });
     }
   }
@@ -684,7 +717,7 @@ export class CodexAppClient extends EventEmitter {
     this.child = null;
     this.emit("warning", {
       type: "process_failure",
-      error: sanitizeError(reason)
+      error: sanitizeError(reason),
     });
 
     for (const { reject, timer } of this.pendingRequests.values()) {
@@ -735,7 +768,12 @@ function normalizeApprovalDecision(value) {
   if (decision === "acceptforsession" || decision === "always") {
     return "acceptForSession";
   }
-  if (decision === "decline" || decision === "deny" || decision === "denied" || decision === "reject") {
+  if (
+    decision === "decline" ||
+    decision === "deny" ||
+    decision === "denied" ||
+    decision === "reject"
+  ) {
     return "decline";
   }
   if (decision === "cancel" || decision === "abort") {
@@ -776,8 +814,8 @@ function annotateSpawnError(error, command) {
     return new Error(
       [
         `Cannot execute Codex binary '${command}' (ENOENT).`,
-        "Set CODEX_BIN to a valid executable (example: C:\\Users\\<you>\\...\\codex.exe) or ensure it is on PATH."
-      ].join("\n")
+        "Set CODEX_BIN to a valid executable (example: C:\\Users\\<you>\\...\\codex.exe) or ensure it is on PATH.",
+      ].join("\n"),
     );
   }
 
@@ -785,8 +823,8 @@ function annotateSpawnError(error, command) {
     return new Error(
       [
         `Cannot execute Codex binary '${command}' (EPERM).`,
-        "On Windows, verify CODEX_BIN points to an executable and that permissions allow process spawn."
-      ].join("\n")
+        "On Windows, verify CODEX_BIN points to an executable and that permissions allow process spawn.",
+      ].join("\n"),
     );
   }
 
@@ -799,7 +837,7 @@ function normalizeTurnInputItems({ prompt, inputItems }) {
   if (text) {
     items.push({
       type: "text",
-      text
+      text,
     });
   }
 
@@ -816,7 +854,7 @@ function normalizeTurnInputItems({ prompt, inputItems }) {
         }
         items.push({
           type: "image",
-          url
+          url,
         });
         continue;
       }
@@ -828,7 +866,7 @@ function normalizeTurnInputItems({ prompt, inputItems }) {
         }
         items.push({
           type: "localImage",
-          path: localPath
+          path: localPath,
         });
       }
     }

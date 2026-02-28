@@ -1,4 +1,4 @@
-import { BotRuntime } from "./bot-runtime.js";
+import { BotRuntime } from "@copilot-hub/core/bot-runtime";
 
 const rawBotConfig = String(process.env.AGENT_BOT_CONFIG_JSON ?? "").trim();
 const rawProviderDefaults = String(process.env.AGENT_PROVIDER_DEFAULTS_JSON ?? "").trim();

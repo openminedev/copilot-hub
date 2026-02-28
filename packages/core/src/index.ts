@@ -25,3 +25,22 @@ export {
 } from "./capability-scaffold.js";
 export { KernelSecretStore } from "./secret-store.js";
 export { loadBotRegistry } from "./bot-registry.js";
+export { AgentSupervisor } from "./agent-supervisor.js";
+export { ConversationEngine } from "./bridge-service.js";
+export { CodexAppClient } from "./codex-app-client.js";
+export { CodexProvider } from "./codex-provider.js";
+export { BotManager } from "./bot-manager.js";
+export { BotRuntime } from "./bot-runtime.js";
+export { CAPABILITY_HOOKS, CapabilityManager } from "./capability-manager.js";
+export { createAssistantProvider } from "./provider-factory.js";
+export { createChannelAdapter } from "./channel-factory.js";
+export { TelegramChannel } from "./telegram-channel.js";
+export { WhatsAppChannel } from "./whatsapp-channel.js";
+export {
+  CONTROL_ACTIONS,
+  normalizeControlAction,
+  isControlAction,
+  requireControlAction,
+} from "./control-plane-actions.js";
+export { EXTENSION_CONTRACT_VERSION, getExtensionContract } from "./extension-contract.js";
+export { KernelControlPlane } from "./kernel-control-plane.js";

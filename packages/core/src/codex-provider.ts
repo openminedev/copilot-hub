@@ -1,9 +1,17 @@
+// @ts-nocheck
 import { EventEmitter } from "node:events";
 import path from "node:path";
-import { CodexAppClient } from "../codex-app-client.js";
+import { CodexAppClient } from "./codex-app-client.js";
 
 export class CodexProvider extends EventEmitter {
-  constructor({ codexBin, codexHomeDir, sandboxMode, approvalPolicy, workspaceRoot, turnActivityTimeoutMs }) {
+  constructor({
+    codexBin,
+    codexHomeDir,
+    sandboxMode,
+    approvalPolicy,
+    workspaceRoot,
+    turnActivityTimeoutMs,
+  }) {
     super();
     this.kind = "codex";
     this.workspaceRoot = path.resolve(String(workspaceRoot));
@@ -13,13 +21,13 @@ export class CodexProvider extends EventEmitter {
       cwd: this.workspaceRoot,
       sandboxMode,
       approvalPolicy,
-      turnActivityTimeoutMs
+      turnActivityTimeoutMs,
     });
 
     this.client.on("approvalRequested", (approval) => {
       this.emit("approvalRequested", {
         ...approval,
-        sessionId: String(approval.threadId ?? "")
+        sessionId: String(approval.threadId ?? ""),
       });
     });
     this.client.on("warning", (warning) => {
@@ -35,30 +43,37 @@ export class CodexProvider extends EventEmitter {
     this.client.setCwd(this.workspaceRoot);
   }
 
-  async sendTurn({ sessionId, prompt, turnActivityTimeoutMs, onSessionReady = null }) {
+  async sendTurn({
+    sessionId,
+    prompt,
+    inputItems = [],
+    turnActivityTimeoutMs,
+    onSessionReady = null,
+  }) {
     const result = await this.client.sendTurn({
       threadId: sessionId,
       prompt,
+      inputItems,
       turnActivityTimeoutMs,
-      onThreadReady: onSessionReady
+      onThreadReady: onSessionReady,
     });
     return {
       sessionId: result.threadId,
       turnId: result.turnId,
-      assistantText: result.assistantText
+      assistantText: result.assistantText,
     };
   }
 
   async resolveApproval({ approvalId, decision }) {
     return this.client.resolveApproval({
       approvalId,
-      decision
+      decision,
     });
   }
 
   async interruptTurn({ sessionId }) {
     return this.client.interruptTurn({
-      threadId: sessionId
+      threadId: sessionId,
     });
   }
 

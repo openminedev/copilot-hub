@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { fork } from "node:child_process";
 
 const REQUEST_TIMEOUT_MS = 15000;
@@ -11,7 +12,7 @@ export class AgentSupervisor {
     maxMessages,
     webPublicBaseUrl,
     workerScriptPath,
-    onKernelAction = null
+    onKernelAction = null,
   }) {
     this.botConfig = botConfig;
     this.providerDefaults = providerDefaults;
@@ -49,7 +50,7 @@ export class AgentSupervisor {
     return {
       ...this.statusCache,
       lastHeartbeatAt: this.lastHeartbeatAt,
-      lastHeartbeatError: this.lastHeartbeatError
+      lastHeartbeatError: this.lastHeartbeatError,
     };
   }
 
@@ -110,7 +111,6 @@ export class AgentSupervisor {
     return this.getStatus();
   }
 
-
   async resetWebThread() {
     await this.ensureWorker();
     return this.request("resetWebThread");
@@ -126,7 +126,7 @@ export class AgentSupervisor {
     return this.request("resolvePendingApproval", {
       threadId,
       approvalId,
-      decision
+      decision,
     });
   }
 
@@ -138,7 +138,7 @@ export class AgentSupervisor {
   setCapabilities(nextCapabilities) {
     this.botConfig = {
       ...this.botConfig,
-      capabilities: Array.isArray(nextCapabilities) ? nextCapabilities : []
+      capabilities: Array.isArray(nextCapabilities) ? nextCapabilities : [],
     };
   }
 
@@ -149,7 +149,9 @@ export class AgentSupervisor {
         ? previousConfig.provider
         : { kind: "codex", options: {} };
     const mergedOptions = {
-      ...(previousProvider.options && typeof previousProvider.options === "object" ? previousProvider.options : {})
+      ...(previousProvider.options && typeof previousProvider.options === "object"
+        ? previousProvider.options
+        : {}),
     };
 
     if (typeof nextOptions?.sandboxMode === "string" && nextOptions.sandboxMode.trim()) {
@@ -164,8 +166,8 @@ export class AgentSupervisor {
       provider: {
         ...previousProvider,
         kind: String(previousProvider.kind ?? "codex").trim() || "codex",
-        options: mergedOptions
-      }
+        options: mergedOptions,
+      },
     };
 
     try {
@@ -189,7 +191,7 @@ export class AgentSupervisor {
     }
     await this.ensureWorker();
     const status = await this.request("reloadCapabilities", {
-      capabilityDefinitions: Array.isArray(nextCapabilities) ? nextCapabilities : undefined
+      capabilityDefinitions: Array.isArray(nextCapabilities) ? nextCapabilities : undefined,
     });
     this.#updateStatus(status);
     return this.getStatus();
@@ -324,7 +326,7 @@ export class AgentSupervisor {
       this.pendingRequests.set(requestId, {
         resolve,
         reject,
-        timer
+        timer,
       });
 
       try {
@@ -332,7 +334,7 @@ export class AgentSupervisor {
           type: "request",
           requestId,
           action,
-          payload
+          payload,
         });
       } catch (error) {
         clearTimeout(timer);
@@ -358,10 +360,10 @@ export class AgentSupervisor {
         AGENT_TURN_ACTIVITY_TIMEOUT_MS: String(this.turnActivityTimeoutMs),
         AGENT_MAX_MESSAGES: String(this.maxMessages),
         AGENT_WEB_PUBLIC_BASE_URL: this.webPublicBaseUrl,
-        AGENT_KERNEL_REQUEST_TIMEOUT_MS: String(REQUEST_TIMEOUT_MS)
+        AGENT_KERNEL_REQUEST_TIMEOUT_MS: String(REQUEST_TIMEOUT_MS),
       },
       stdio: ["ignore", "pipe", "pipe", "ipc"],
-      windowsHide: true
+      windowsHide: true,
     });
 
     this.child = child;
@@ -434,7 +436,7 @@ export class AgentSupervisor {
       this.#sendKernelResponse({
         requestId,
         ok: false,
-        error: "Kernel control handler is not configured."
+        error: "Kernel control handler is not configured.",
       });
       return;
     }
@@ -444,18 +446,18 @@ export class AgentSupervisor {
         actorBotId: this.id,
         action: message?.action,
         payload: message?.payload ?? {},
-        context: message?.context ?? {}
+        context: message?.context ?? {},
       });
       this.#sendKernelResponse({
         requestId,
         ok: true,
-        result
+        result,
       });
     } catch (error) {
       this.#sendKernelResponse({
         requestId,
         ok: false,
-        error: sanitizeError(error)
+        error: sanitizeError(error),
       });
     }
   }
@@ -470,7 +472,7 @@ export class AgentSupervisor {
         requestId,
         ok,
         result,
-        error
+        error,
       });
     } catch {
       // Ignore response send errors.
@@ -483,7 +485,9 @@ export class AgentSupervisor {
     }
 
     this.#rejectAllPending(
-      new Error(`Worker '${this.id}' exited (code=${String(code ?? "null")}, signal=${String(signal ?? "null")}).`)
+      new Error(
+        `Worker '${this.id}' exited (code=${String(code ?? "null")}, signal=${String(signal ?? "null")}).`,
+      ),
     );
     this.#setOfflineStatus();
 
@@ -516,7 +520,7 @@ export class AgentSupervisor {
     this.statusCache = {
       ...this.statusCache,
       ...status,
-      running: status.running ?? this.statusCache.running
+      running: status.running ?? this.statusCache.running,
     };
     if (this.statusCache.running) {
       this.restartAttempt = 0;
@@ -527,7 +531,7 @@ export class AgentSupervisor {
     this.statusCache = {
       ...this.statusCache,
       running: false,
-      telegramRunning: false
+      telegramRunning: false,
     };
   }
 }
@@ -569,11 +573,15 @@ function createInitialStatus(botConfig) {
     dataDir: botConfig.dataDir,
     kernelAccess: {
       enabled: botConfig.kernelAccess?.enabled === true,
-      allowedActions: Array.isArray(botConfig.kernelAccess?.allowedActions) ? [...botConfig.kernelAccess.allowedActions] : [],
-      allowedChatIds: Array.isArray(botConfig.kernelAccess?.allowedChatIds) ? [...botConfig.kernelAccess.allowedChatIds] : []
+      allowedActions: Array.isArray(botConfig.kernelAccess?.allowedActions)
+        ? [...botConfig.kernelAccess.allowedActions]
+        : [],
+      allowedChatIds: Array.isArray(botConfig.kernelAccess?.allowedChatIds)
+        ? [...botConfig.kernelAccess.allowedChatIds]
+        : [],
     },
     capabilities: [],
-    channels: []
+    channels: [],
   };
 }
 

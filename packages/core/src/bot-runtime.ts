@@ -1,16 +1,24 @@
+// @ts-nocheck
 import path from "node:path";
 import { ConversationEngine } from "./bridge-service.js";
-import { createChannelAdapter } from "./channels/channel-factory.js";
-import { CapabilityManager } from "./kernel/capability-manager.js";
-import { KERNEL_VERSION } from "@copilot-hub/core/kernel-version";
-import { createProjectFingerprint } from "@copilot-hub/core/project-fingerprint";
-import { JsonStateStore } from "@copilot-hub/core/state-store";
-import { createAssistantProvider } from "./providers/provider-factory.js";
+import { createChannelAdapter } from "./channel-factory.js";
+import { CapabilityManager } from "./capability-manager.js";
+import { KERNEL_VERSION } from "./kernel-version.js";
+import { createProjectFingerprint } from "./project-fingerprint.js";
+import { JsonStateStore } from "./state-store.js";
+import { createAssistantProvider } from "./provider-factory.js";
 
 const DEFAULT_WEB_THREAD_SUFFIX = "web-main";
 
 export class BotRuntime {
-  constructor({ botConfig, providerDefaults, turnActivityTimeoutMs, maxMessages, kernelControl = null }) {
+  constructor({
+    botConfig,
+    providerDefaults,
+    turnActivityTimeoutMs,
+    maxMessages,
+    kernelControl = null,
+    channelAdapterFactory = null,
+  }) {
     this.config = {
       ...botConfig,
       channels: Array.isArray(botConfig.channels) ? botConfig.channels : [],
@@ -24,19 +32,22 @@ export class BotRuntime {
                 : [],
               allowedChatIds: Array.isArray(botConfig.kernelAccess.allowedChatIds)
                 ? [...botConfig.kernelAccess.allowedChatIds]
-                : []
+                : [],
             }
           : {
               enabled: false,
               allowedActions: [],
-              allowedChatIds: []
-            }
+              allowedChatIds: [],
+            },
     };
     this.providerDefaults = {
       defaultKind: "codex",
-      ...(providerDefaults ?? {})
+      ...(providerDefaults ?? {}),
     };
-    this.kernelControl = kernelControl && typeof kernelControl.request === "function" ? kernelControl : null;
+    this.kernelControl =
+      kernelControl && typeof kernelControl.request === "function" ? kernelControl : null;
+    this.channelAdapterFactory =
+      typeof channelAdapterFactory === "function" ? channelAdapterFactory : createChannelAdapter;
     this.turnActivityTimeoutMs = turnActivityTimeoutMs;
     this.maxMessages = maxMessages;
     this.projectRoot = path.resolve(String(this.config.workspaceRoot));
@@ -45,7 +56,7 @@ export class BotRuntime {
       runtimeId: this.config.id,
       workspaceRoot: this.projectRoot,
       providerKind: this.config.provider?.kind,
-      channels: this.config.channels
+      channels: this.config.channels,
     });
 
     this.store = null;
@@ -98,7 +109,7 @@ export class BotRuntime {
         providerConfig: this.config.provider,
         providerDefaults: this.providerDefaults,
         workspaceRoot: this.projectRoot,
-        turnActivityTimeoutMs: this.turnActivityTimeoutMs
+        turnActivityTimeoutMs: this.turnActivityTimeoutMs,
       });
 
       this.engine = new ConversationEngine({
@@ -107,23 +118,21 @@ export class BotRuntime {
         projectRoot: this.projectRoot,
         turnActivityTimeoutMs: this.turnActivityTimeoutMs,
         maxMessages: this.maxMessages,
-        onApprovalRequested: (approval) => this.onApprovalRequested(approval)
+        onApprovalRequested: (approval) => this.onApprovalRequested(approval),
       });
 
       this.capabilityManager = new CapabilityManager({
         runtimeId: this.id,
         kernelVersion: KERNEL_VERSION,
         workspaceRoot: this.projectRoot,
-        capabilityDefinitions: this.config.capabilities
+        capabilityDefinitions: this.config.capabilities,
       });
       await this.capabilityManager.initialize();
 
       await this.store.ensureThread(this.webThreadId);
+      const createAdapter = this.channelAdapterFactory;
       this.channels = this.config.channels.map((channelConfig) =>
-        createChannelAdapter({
-          channelConfig,
-          runtime: this.#buildChannelRuntime()
-        })
+        createAdapter({ channelConfig, runtime: this.#buildChannelRuntime() }),
       );
       this.#syncTelegramStatus();
     })();
@@ -185,7 +194,7 @@ export class BotRuntime {
       runtimeId: this.id,
       workspaceRoot: this.projectRoot,
       providerKind: this.providerKind,
-      channels: this.config.channels
+      channels: this.config.channels,
     });
 
     await this.ensureInitialized();
@@ -193,7 +202,6 @@ export class BotRuntime {
       await this.startChannels();
     }
   }
-
 
   async resetWebThread() {
     await this.ensureInitialized();
@@ -241,7 +249,7 @@ export class BotRuntime {
     await this.ensureInitialized();
     const input = await this.capabilityManager.transformTurnInput({
       ...payload,
-      metadata: payload?.metadata && typeof payload.metadata === "object" ? payload.metadata : {}
+      metadata: payload?.metadata && typeof payload.metadata === "object" ? payload.metadata : {},
     });
 
     if (!String(input.prompt ?? "").trim()) {
@@ -254,7 +262,7 @@ export class BotRuntime {
       prompt: input.prompt,
       source: input.source,
       metadata: input.metadata,
-      result
+      result,
     });
     return result;
   }
@@ -283,10 +291,10 @@ export class BotRuntime {
           : [],
         allowedChatIds: Array.isArray(this.config.kernelAccess?.allowedChatIds)
           ? [...this.config.kernelAccess.allowedChatIds]
-          : []
+          : [],
       },
       capabilities: this.capabilityManager ? this.capabilityManager.getStatus() : [],
-      channels: this.channels.map((channel) => channel.getStatus())
+      channels: this.channels.map((channel) => channel.getStatus()),
     };
   }
 
@@ -343,7 +351,7 @@ export class BotRuntime {
     const result = await this.store.ensureFingerprint(this.projectFingerprint);
     if (result.reset) {
       console.log(
-        `[${this.id}] Session store reset due project fingerprint change (${result.previousFingerprint} -> ${this.projectFingerprint}).`
+        `[${this.id}] Session store reset due project fingerprint change (${result.previousFingerprint} -> ${this.projectFingerprint}).`,
       );
     }
   }
@@ -362,7 +370,7 @@ export class BotRuntime {
       interruptThread: (threadId) => this.interruptThread(threadId),
       listPendingApprovals: (threadId) => this.listPendingApprovals(threadId),
       resolvePendingApproval: (payload) => this.resolvePendingApproval(payload),
-      sendTurn: (payload) => this.sendTurn(payload)
+      sendTurn: (payload) => this.sendTurn(payload),
     };
   }
 
@@ -377,7 +385,7 @@ export class BotRuntime {
     return this.kernelControl.request({
       action,
       payload: payload ?? {},
-      context: context ?? { source: "internal", metadata: {} }
+      context: context ?? { source: "internal", metadata: {} },
     });
   }
 
@@ -388,7 +396,9 @@ export class BotRuntime {
       return;
     }
 
-    const telegram = this.channels.filter((channel) => channel.kind === "telegram").map((channel) => channel.getStatus());
+    const telegram = this.channels
+      .filter((channel) => channel.kind === "telegram")
+      .map((channel) => channel.getStatus());
     this.telegramRunning = telegram.some((entry) => entry.running);
     const errors = telegram.map((entry) => entry.error).filter(Boolean);
     this.telegramError = errors.length > 0 ? errors[0] : null;

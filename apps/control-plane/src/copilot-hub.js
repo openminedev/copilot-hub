@@ -1,7 +1,8 @@
 import path from "node:path";
-import { BotRuntime } from "./bot-runtime.js";
+import { BotRuntime } from "@copilot-hub/core/bot-runtime";
 import { config } from "./config.js";
 import { assertWorkspaceAllowed } from "@copilot-hub/core/workspace-policy";
+import { createChannelAdapter } from "./channels/channel-factory.js";
 
 const tokenEnvName = String(process.env.HUB_TELEGRAM_TOKEN_ENV ?? "HUB_TELEGRAM_TOKEN").trim() || "HUB_TELEGRAM_TOKEN";
 const hubToken = String(process.env[tokenEnvName] ?? "").trim();
@@ -72,7 +73,8 @@ const runtime = new BotRuntime({
   },
   providerDefaults: config.providerDefaults,
   turnActivityTimeoutMs: config.turnActivityTimeoutMs,
-  maxMessages: config.maxMessages
+  maxMessages: config.maxMessages,
+  channelAdapterFactory: createChannelAdapter
 });
 
 let shuttingDown = false;

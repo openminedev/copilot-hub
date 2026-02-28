@@ -1,3 +1,4 @@
+// @ts-nocheck
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import path from "node:path";
@@ -8,7 +9,7 @@ export const CAPABILITY_HOOKS = Object.freeze([
   "onRuntimeStop",
   "onTurnStart",
   "onTurnResult",
-  "onApprovalRequested"
+  "onApprovalRequested",
 ]);
 
 const SUPPORTED_HOOKS = new Set(CAPABILITY_HOOKS);
@@ -48,7 +49,7 @@ export class CapabilityManager {
       try {
         const loaded = await this.#loadCapability({
           id: capabilityId,
-          definition
+          definition,
         });
         this.loadedCapabilities.push(loaded);
       } catch (error) {
@@ -58,7 +59,7 @@ export class CapabilityManager {
           error: sanitizeError(error),
           hooks: [],
           manifestPath: definition.manifestPath,
-          entryPath: null
+          entryPath: null,
         });
       }
     }
@@ -75,7 +76,7 @@ export class CapabilityManager {
       hooks: [...(entry.hooks ?? [])],
       error: entry.error ?? null,
       manifestPath: entry.manifestPath ?? null,
-      entryPath: entry.entryPath ?? null
+      entryPath: entry.entryPath ?? null,
     }));
   }
 
@@ -87,7 +88,7 @@ export class CapabilityManager {
   async transformTurnInput(input) {
     let current = {
       ...input,
-      metadata: input?.metadata && typeof input.metadata === "object" ? { ...input.metadata } : {}
+      metadata: input?.metadata && typeof input.metadata === "object" ? { ...input.metadata } : {},
     };
 
     for (const capability of this.loadedCapabilities) {
@@ -99,8 +100,8 @@ export class CapabilityManager {
         hookName: "onTurnStart",
         payload: freezeShallow({
           ...current,
-          runtimeId: this.runtimeId
-        })
+          runtimeId: this.runtimeId,
+        }),
       });
       if (!output || typeof output !== "object") {
         continue;
@@ -115,7 +116,7 @@ export class CapabilityManager {
       if (output.metadata && typeof output.metadata === "object") {
         current.metadata = {
           ...current.metadata,
-          ...output.metadata
+          ...output.metadata,
         };
       }
     }
@@ -126,11 +127,17 @@ export class CapabilityManager {
   async transformTurnResult(payload) {
     let current = {
       ...payload,
-      result: payload?.result && typeof payload.result === "object" ? { ...payload.result } : payload?.result
+      result:
+        payload?.result && typeof payload.result === "object"
+          ? { ...payload.result }
+          : payload?.result,
     };
 
     for (const capability of this.loadedCapabilities) {
-      if (capability.status !== "loaded" || typeof capability.instance.onTurnResult !== "function") {
+      if (
+        capability.status !== "loaded" ||
+        typeof capability.instance.onTurnResult !== "function"
+      ) {
         continue;
       }
       const output = await this.#runCapabilityHook({
@@ -138,8 +145,8 @@ export class CapabilityManager {
         hookName: "onTurnResult",
         payload: freezeShallow({
           ...current,
-          runtimeId: this.runtimeId
-        })
+          runtimeId: this.runtimeId,
+        }),
       });
       if (!output || typeof output !== "object") {
         continue;
@@ -148,13 +155,13 @@ export class CapabilityManager {
       if (Object.prototype.hasOwnProperty.call(output, "assistantText")) {
         current.result = {
           ...(current.result ?? {}),
-          assistantText: String(output.assistantText ?? "")
+          assistantText: String(output.assistantText ?? ""),
         };
       }
       if (output.result && typeof output.result === "object") {
         current.result = {
           ...(current.result ?? {}),
-          ...output.result
+          ...output.result,
         };
       }
     }
@@ -165,7 +172,7 @@ export class CapabilityManager {
   async notifyApprovalRequested(approval) {
     await this.runHook("onApprovalRequested", {
       approval,
-      runtimeId: this.runtimeId
+      runtimeId: this.runtimeId,
     });
   }
 
@@ -188,8 +195,8 @@ export class CapabilityManager {
         hookName: normalizedHook,
         payload: freezeShallow({
           ...payload,
-          runtimeId: this.runtimeId
-        })
+          runtimeId: this.runtimeId,
+        }),
       });
     }
   }
@@ -210,16 +217,22 @@ export class CapabilityManager {
     const manifestPath = resolvePath(definition.manifestPath, this.workspaceRoot);
     const manifest = await readManifest(manifestPath);
 
-    if (manifest.minKernelVersion && compareSemver(this.kernelVersion, manifest.minKernelVersion) < 0) {
+    if (
+      manifest.minKernelVersion &&
+      compareSemver(this.kernelVersion, manifest.minKernelVersion) < 0
+    ) {
       throw new Error(
-        `Capability '${id}' requires kernel ${manifest.minKernelVersion}, current kernel is ${this.kernelVersion}.`
+        `Capability '${id}' requires kernel ${manifest.minKernelVersion}, current kernel is ${this.kernelVersion}.`,
       );
     }
 
     const declaredHooks = (Array.isArray(manifest.hooks) ? manifest.hooks : [])
       .map((entry) => String(entry ?? "").trim())
       .filter((entry) => SUPPORTED_HOOKS.has(entry));
-    const entryPath = path.resolve(path.dirname(manifestPath), String(manifest.entry ?? "index.js"));
+    const entryPath = path.resolve(
+      path.dirname(manifestPath),
+      String(manifest.entry ?? "index.js"),
+    );
     const moduleUrl = `${pathToFileURL(entryPath).href}?ts=${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const loadedModule = await import(moduleUrl);
     const factory = resolveCapabilityFactory(loadedModule);
@@ -227,7 +240,7 @@ export class CapabilityManager {
       runtimeId: this.runtimeId,
       capabilityId: id,
       manifest,
-      options: definition.options ?? {}
+      options: definition.options ?? {},
     });
 
     if (!instance || typeof instance !== "object") {
@@ -245,7 +258,7 @@ export class CapabilityManager {
       manifestPath,
       entryPath,
       error: null,
-      instance
+      instance,
     };
   }
 }
@@ -275,7 +288,7 @@ async function readManifest(manifestPath) {
     hooks: Array.isArray(parsed.hooks) ? parsed.hooks : [],
     permissions: Array.isArray(parsed.permissions) ? parsed.permissions : [],
     minKernelVersion: String(parsed.minKernelVersion ?? "").trim() || null,
-    timeoutMs: clampTimeoutMs(parsed.timeoutMs)
+    timeoutMs: clampTimeoutMs(parsed.timeoutMs),
   };
 }
 
@@ -289,7 +302,9 @@ function resolveCapabilityFactory(loadedModule) {
   if (loadedModule?.default && typeof loadedModule.default === "object") {
     return async () => loadedModule.default;
   }
-  throw new Error("Capability module must export createCapability(), default function, or default object.");
+  throw new Error(
+    "Capability module must export createCapability(), default function, or default object.",
+  );
 }
 
 function clampTimeoutMs(value) {

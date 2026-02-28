@@ -1,20 +1,22 @@
+// @ts-nocheck
 import fs from "node:fs/promises";
 import path from "node:path";
-import { loadBotRegistry } from "@copilot-hub/core/bot-registry";
+import { loadBotRegistry } from "./bot-registry.js";
 import {
   scaffoldCapabilityInWorkspace,
   normalizeCapabilityId,
   normalizeCapabilityName,
-} from "@copilot-hub/core/capability-scaffold";
+} from "./capability-scaffold.js";
 import { CONTROL_ACTIONS, requireControlAction } from "./control-plane-actions.js";
 import { getExtensionContract } from "./extension-contract.js";
-import { assertControlPermission } from "@copilot-hub/core/control-permission";
+import { assertControlPermission } from "./control-permission.js";
 
 export class KernelControlPlane {
   constructor({ botManager, registryFilePath, registryLoadOptions, secretStore = null }) {
     this.botManager = botManager;
     this.registryFilePath = path.resolve(String(registryFilePath));
-    this.registryLoadOptions = registryLoadOptions && typeof registryLoadOptions === "object" ? registryLoadOptions : {};
+    this.registryLoadOptions =
+      registryLoadOptions && typeof registryLoadOptions === "object" ? registryLoadOptions : {};
     this.secretStore = secretStore;
   }
 
@@ -25,12 +27,12 @@ export class KernelControlPlane {
       supervisor,
       action: normalizedAction,
       source: context?.source,
-      metadata: context?.metadata
+      metadata: context?.metadata,
     });
     return this.#executeAction({
       action: normalizedAction,
       payload,
-      actorBotId
+      actorBotId,
     });
   }
 
@@ -39,7 +41,7 @@ export class KernelControlPlane {
     return this.#executeAction({
       action: normalizedAction,
       payload,
-      actorBotId: null
+      actorBotId: null,
     });
   }
 
@@ -78,7 +80,7 @@ export class KernelControlPlane {
         const startIfEnabled = safePayload.startIfEnabled !== false;
         const created = await this.#createBot({
           rawAgent: agent,
-          startIfEnabled
+          startIfEnabled,
         });
         return created;
       }
@@ -98,23 +100,12 @@ export class KernelControlPlane {
           botId,
           deleteMode,
           purgeData,
-          purgeWorkspace
+          purgeWorkspace,
         });
         return {
           deleted: true,
-          ...deleted
+          ...deleted,
         };
-      }
-
-      case CONTROL_ACTIONS.BOTS_SET_POLICY: {
-        const botId = requireNonEmptyString(safePayload.botId, "payload.botId");
-        const sandboxMode = requireSandboxMode(safePayload.sandboxMode);
-        const approvalPolicy = requireApprovalPolicy(safePayload.approvalPolicy);
-        return this.#setBotPolicy({
-          botId,
-          sandboxMode,
-          approvalPolicy
-        });
       }
 
       case CONTROL_ACTIONS.BOTS_SET_PROJECT: {
@@ -124,12 +115,33 @@ export class KernelControlPlane {
         return { bot };
       }
 
+      case CONTROL_ACTIONS.PROJECTS_LIST: {
+        return this.botManager.listProjects();
+      }
+
+      case CONTROL_ACTIONS.PROJECTS_CREATE: {
+        const name = requireNonEmptyString(safePayload.name, "payload.name");
+        const project = await this.botManager.createProject(name);
+        return { project };
+      }
+
+      case CONTROL_ACTIONS.BOTS_SET_POLICY: {
+        const botId = requireNonEmptyString(safePayload.botId, "payload.botId");
+        const sandboxMode = requireSandboxMode(safePayload.sandboxMode);
+        const approvalPolicy = requireApprovalPolicy(safePayload.approvalPolicy);
+        return this.#setBotPolicy({
+          botId,
+          sandboxMode,
+          approvalPolicy,
+        });
+      }
+
       case CONTROL_ACTIONS.BOTS_CAPABILITIES_LIST: {
         const botId = requireNonEmptyString(safePayload.botId, "payload.botId");
         const capabilities = await this.botManager.listBotCapabilities(botId);
         return {
           botId,
-          capabilities
+          capabilities,
         };
       }
 
@@ -146,25 +158,15 @@ export class KernelControlPlane {
         const result = await this.#scaffoldCapability({
           botId,
           capabilityId,
-          capabilityName
+          capabilityName,
         });
         return result;
-      }
-
-      case CONTROL_ACTIONS.PROJECTS_LIST: {
-        return this.botManager.listProjects();
-      }
-
-      case CONTROL_ACTIONS.PROJECTS_CREATE: {
-        const name = requireNonEmptyString(safePayload.name, "payload.name");
-        const project = await this.botManager.createProject(name);
-        return { project };
       }
 
       case CONTROL_ACTIONS.SECRETS_LIST: {
         ensureSecretStore(this.secretStore);
         return {
-          secrets: this.secretStore.listSecretNames()
+          secrets: this.secretStore.listSecretNames(),
         };
       }
 
@@ -206,7 +208,7 @@ export class KernelControlPlane {
     const nextRegistry = {
       ...previousRegistry,
       version: Number(previousRegistry.version) || 3,
-      agents: [...previousRegistry.agents, rawAgent]
+      agents: [...previousRegistry.agents, rawAgent],
     };
     await this.#writeRegistry(nextRegistry);
 
@@ -227,7 +229,8 @@ export class KernelControlPlane {
     const previousRegistryText = await fs.readFile(this.registryFilePath, "utf8");
     const previousRegistry = parseRegistryJson(previousRegistryText, this.registryFilePath);
 
-    const targetAgent = previousRegistry.agents.find((entry) => String(entry?.id ?? "").trim() === botId) ?? null;
+    const targetAgent =
+      previousRegistry.agents.find((entry) => String(entry?.id ?? "").trim() === botId) ?? null;
     if (!targetAgent) {
       throw new Error(`Bot '${botId}' does not exist.`);
     }
@@ -236,14 +239,14 @@ export class KernelControlPlane {
     const nextRegistry = {
       ...previousRegistry,
       version: Number(previousRegistry.version) || 3,
-      agents: previousRegistry.agents.filter((entry) => String(entry?.id ?? "").trim() !== botId)
+      agents: previousRegistry.agents.filter((entry) => String(entry?.id ?? "").trim() !== botId),
     };
     await this.#writeRegistry(nextRegistry);
 
     try {
       const removed = await this.botManager.removeBot(botId, {
         purgeData,
-        purgeWorkspace
+        purgeWorkspace,
       });
 
       let secretsDeleted = [];
@@ -257,7 +260,7 @@ export class KernelControlPlane {
         purgeData: removed.purgeData === true,
         purgeWorkspace: removed.purgeWorkspace === true,
         tokenSecretRefs,
-        secretsDeleted
+        secretsDeleted,
       };
     } catch (error) {
       await fs.writeFile(this.registryFilePath, previousRegistryText, "utf8").catch(() => {
@@ -270,9 +273,11 @@ export class KernelControlPlane {
   async #setBotPolicy({ botId, sandboxMode, approvalPolicy }) {
     const previousRegistryText = await fs.readFile(this.registryFilePath, "utf8");
     const previousRegistry = parseRegistryJson(previousRegistryText, this.registryFilePath);
-    const targetIndex = previousRegistry.agents.findIndex((entry) => String(entry?.id ?? "").trim() === botId);
+    const targetIndex = previousRegistry.agents.findIndex(
+      (entry) => String(entry?.id ?? "").trim() === botId,
+    );
     if (targetIndex < 0) {
-      throw new Error(`Bot "${botId}" does not exist.`);
+      throw new Error(`Bot '${botId}' does not exist.`);
     }
 
     const targetAgent = previousRegistry.agents[targetIndex];
@@ -284,22 +289,24 @@ export class KernelControlPlane {
       ...currentProvider,
       kind: String(currentProvider.kind ?? "codex").trim() || "codex",
       options: {
-        ...(currentProvider.options && typeof currentProvider.options === "object" ? currentProvider.options : {}),
+        ...(currentProvider.options && typeof currentProvider.options === "object"
+          ? currentProvider.options
+          : {}),
         sandboxMode,
-        approvalPolicy
-      }
+        approvalPolicy,
+      },
     };
 
     const nextAgents = [...previousRegistry.agents];
     nextAgents[targetIndex] = {
       ...targetAgent,
-      provider: nextProvider
+      provider: nextProvider,
     };
 
     const nextRegistry = {
       ...previousRegistry,
       version: Number(previousRegistry.version) || 3,
-      agents: nextAgents
+      agents: nextAgents,
     };
 
     await this.#writeRegistry(nextRegistry);
@@ -307,14 +314,14 @@ export class KernelControlPlane {
     try {
       const bot = await this.botManager.setBotProviderOptions(botId, {
         sandboxMode,
-        approvalPolicy
+        approvalPolicy,
       });
       return {
         bot,
         policy: {
           sandboxMode,
-          approvalPolicy
-        }
+          approvalPolicy,
+        },
       };
     } catch (error) {
       await fs.writeFile(this.registryFilePath, previousRegistryText, "utf8").catch(() => {
@@ -336,13 +343,13 @@ export class KernelControlPlane {
         const result = await this.secretStore.deleteSecret(name);
         deleted.push({
           name,
-          deleted: result?.deleted === true
+          deleted: result?.deleted === true,
         });
       } catch (error) {
         deleted.push({
           name,
           deleted: false,
-          error: sanitizeError(error)
+          error: sanitizeError(error),
         });
       }
     }
@@ -353,46 +360,53 @@ export class KernelControlPlane {
     const previousRegistryText = await fs.readFile(this.registryFilePath, "utf8");
     const previousRegistry = parseRegistryJson(previousRegistryText, this.registryFilePath);
 
-    const targetIndex = previousRegistry.agents.findIndex((entry) => String(entry?.id ?? "").trim() === botId);
+    const targetIndex = previousRegistry.agents.findIndex(
+      (entry) => String(entry?.id ?? "").trim() === botId,
+    );
     if (targetIndex < 0) {
       throw new Error(`Bot '${botId}' does not exist.`);
     }
 
     const targetAgent = previousRegistry.agents[targetIndex];
-    const existingCapabilities = Array.isArray(targetAgent?.capabilities) ? targetAgent.capabilities : [];
+    const existingCapabilities = Array.isArray(targetAgent?.capabilities)
+      ? targetAgent.capabilities
+      : [];
     const alreadyDeclared = existingCapabilities.some(
-      (entry) => entry && typeof entry === "object" && String(entry.id ?? "").trim() === capabilityId
+      (entry) =>
+        entry && typeof entry === "object" && String(entry.id ?? "").trim() === capabilityId,
     );
     if (alreadyDeclared) {
       throw new Error(`Capability '${capabilityId}' already exists for bot '${botId}'.`);
     }
 
     const normalizedBefore = await this.#loadNormalizedBot(botId);
-    const previousLoadedCapabilities = Array.isArray(normalizedBefore.capabilities) ? normalizedBefore.capabilities : [];
+    const previousLoadedCapabilities = Array.isArray(normalizedBefore.capabilities)
+      ? normalizedBefore.capabilities
+      : [];
     const scaffold = await scaffoldCapabilityInWorkspace({
       workspaceRoot: normalizedBefore.workspaceRoot,
       capabilityId,
-      capabilityName
+      capabilityName,
     });
 
     const appendedCapability = {
       id: capabilityId,
       enabled: true,
       manifestPath: scaffold.manifestPathForRegistry,
-      options: {}
+      options: {},
     };
 
     const nextAgents = [...previousRegistry.agents];
     const nextAgent = {
       ...targetAgent,
-      capabilities: [...existingCapabilities, appendedCapability]
+      capabilities: [...existingCapabilities, appendedCapability],
     };
     nextAgents[targetIndex] = nextAgent;
 
     const nextRegistry = {
       ...previousRegistry,
       version: Number(previousRegistry.version) || 3,
-      agents: nextAgents
+      agents: nextAgents,
     };
 
     await this.#writeRegistry(nextRegistry);
@@ -404,7 +418,7 @@ export class KernelControlPlane {
       return {
         bot,
         capability: appendedCapability,
-        scaffold
+        scaffold,
       };
     } catch (error) {
       await fs.writeFile(this.registryFilePath, previousRegistryText, "utf8").catch(() => {
@@ -424,7 +438,7 @@ export class KernelControlPlane {
     const registry = await loadBotRegistry({
       filePath: this.registryFilePath,
       resolveSecret: (name) => this.secretStore?.getSecret(name) ?? null,
-      ...this.registryLoadOptions
+      ...this.registryLoadOptions,
     });
     const normalized = registry.bots.find((entry) => entry.id === botId);
     if (!normalized) {
@@ -445,12 +459,12 @@ export class KernelControlPlane {
     return {
       workspaceRoot: {
         path: workspacePath,
-        existed: workspaceExisted
+        existed: workspaceExisted,
       },
       dataDir: {
         path: dataDirPath,
-        existed: dataDirExisted
-      }
+        existed: dataDirExisted,
+      },
     };
   }
 
@@ -524,7 +538,7 @@ function requireSandboxMode(value) {
     .trim()
     .toLowerCase();
   if (!ALLOWED_SANDBOX_MODES.has(normalized)) {
-    throw new Error(`Unsupported sandboxMode "${normalized || "<empty>"}".`);
+    throw new Error(`Unsupported sandboxMode '${normalized || "<empty>"}'.`);
   }
   return normalized;
 }
@@ -534,7 +548,7 @@ function requireApprovalPolicy(value) {
     .trim()
     .toLowerCase();
   if (!ALLOWED_APPROVAL_POLICIES.has(normalized)) {
-    throw new Error(`Unsupported approvalPolicy "${normalized || "<empty>"}".`);
+    throw new Error(`Unsupported approvalPolicy '${normalized || "<empty>"}'.`);
   }
   return normalized;
 }

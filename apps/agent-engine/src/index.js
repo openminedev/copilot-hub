@@ -1,11 +1,12 @@
-﻿import path from "node:path";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import express from "express";
-import { BotManager } from "./bot-manager.js";
+import { BotManager } from "@copilot-hub/core/bot-manager";
 import { loadBotRegistry } from "@copilot-hub/core/bot-registry";
 import { config } from "./config.js";
 import { InstanceLock } from "@copilot-hub/core/instance-lock";
-import { KernelControlPlane } from "./kernel/control-plane.js";
-import { CONTROL_ACTIONS } from "./kernel/control-plane-actions.js";
+import { KernelControlPlane } from "@copilot-hub/core/kernel-control-plane";
+import { CONTROL_ACTIONS } from "@copilot-hub/core/control-plane-actions";
 import { KernelSecretStore } from "@copilot-hub/core/secret-store";
 
 let activeWebPort = config.webPort;
@@ -17,6 +18,7 @@ let botManager = null;
 let instanceLock = null;
 let controlPlane = null;
 let secretStore = null;
+const workerScriptPath = fileURLToPath(new URL("./agent-worker.js", import.meta.url));
 
 await bootstrap();
 
@@ -53,6 +55,7 @@ async function bootstrap() {
       maxMessages: config.maxMessages,
       webPublicBaseUrl: runtimeWebPublicBaseUrl,
       projectsBaseDir: config.projectsBaseDir,
+      workerScriptPath,
       botDataRootDir: path.join(config.dataDir, "bots"),
       heartbeatEnabled: config.agentHeartbeatEnabled,
       heartbeatIntervalMs: config.agentHeartbeatIntervalMs,

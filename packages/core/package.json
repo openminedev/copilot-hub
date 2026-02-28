@@ -57,6 +57,62 @@
     "./bot-registry": {
       "types": "./dist/bot-registry.d.ts",
       "import": "./dist/bot-registry.js"
+    },
+    "./agent-supervisor": {
+      "types": "./dist/agent-supervisor.d.ts",
+      "import": "./dist/agent-supervisor.js"
+    },
+    "./bridge-service": {
+      "types": "./dist/bridge-service.d.ts",
+      "import": "./dist/bridge-service.js"
+    },
+    "./codex-app-client": {
+      "types": "./dist/codex-app-client.d.ts",
+      "import": "./dist/codex-app-client.js"
+    },
+    "./codex-provider": {
+      "types": "./dist/codex-provider.d.ts",
+      "import": "./dist/codex-provider.js"
+    },
+    "./bot-manager": {
+      "types": "./dist/bot-manager.d.ts",
+      "import": "./dist/bot-manager.js"
+    },
+    "./bot-runtime": {
+      "types": "./dist/bot-runtime.d.ts",
+      "import": "./dist/bot-runtime.js"
+    },
+    "./capability-manager": {
+      "types": "./dist/capability-manager.d.ts",
+      "import": "./dist/capability-manager.js"
+    },
+    "./provider-factory": {
+      "types": "./dist/provider-factory.d.ts",
+      "import": "./dist/provider-factory.js"
+    },
+    "./channel-factory": {
+      "types": "./dist/channel-factory.d.ts",
+      "import": "./dist/channel-factory.js"
+    },
+    "./telegram-channel": {
+      "types": "./dist/telegram-channel.d.ts",
+      "import": "./dist/telegram-channel.js"
+    },
+    "./whatsapp-channel": {
+      "types": "./dist/whatsapp-channel.d.ts",
+      "import": "./dist/whatsapp-channel.js"
+    },
+    "./control-plane-actions": {
+      "types": "./dist/control-plane-actions.d.ts",
+      "import": "./dist/control-plane-actions.js"
+    },
+    "./extension-contract": {
+      "types": "./dist/extension-contract.d.ts",
+      "import": "./dist/extension-contract.js"
+    },
+    "./kernel-control-plane": {
+      "types": "./dist/kernel-control-plane.d.ts",
+      "import": "./dist/kernel-control-plane.js"
     }
   },
   "files": [

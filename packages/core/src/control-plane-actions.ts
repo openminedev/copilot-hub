@@ -2,5 +2,5 @@ export {
   CONTROL_ACTIONS,
   normalizeControlAction,
   isControlAction,
-  requireControlAction
+  requireControlAction,
 } from "@copilot-hub/contracts/control-plane";

@@ -1,7 +1,7 @@
+// @ts-nocheck
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { AgentSupervisor } from "./agent-supervisor.js";
 
 export class BotManager {
@@ -12,11 +12,12 @@ export class BotManager {
     maxMessages,
     webPublicBaseUrl,
     projectsBaseDir,
+    workerScriptPath,
     botDataRootDir = null,
     onKernelAction = null,
     heartbeatEnabled = true,
     heartbeatIntervalMs = 5000,
-    heartbeatTimeoutMs = 4000
+    heartbeatTimeoutMs = 4000,
   }) {
     this.supervisors = new Map();
     this.providerDefaults = providerDefaults;
@@ -25,7 +26,10 @@ export class BotManager {
     this.webPublicBaseUrl = webPublicBaseUrl;
     this.projectsBaseDir = path.resolve(projectsBaseDir);
     this.botDataRootDir = botDataRootDir ? path.resolve(botDataRootDir) : null;
-    this.workerScriptPath = fileURLToPath(new URL("./agent-worker.js", import.meta.url));
+    this.workerScriptPath = path.resolve(String(workerScriptPath ?? ""));
+    if (!String(workerScriptPath ?? "").trim()) {
+      throw new Error("workerScriptPath is required.");
+    }
     this.kernelActionHandler = typeof onKernelAction === "function" ? onKernelAction : null;
     this.heartbeatEnabled = heartbeatEnabled;
     this.heartbeatIntervalMs = heartbeatIntervalMs;
@@ -106,7 +110,6 @@ export class BotManager {
     return supervisor.stopChannels();
   }
 
-
   async resetWebThread(botId) {
     const supervisor = this.getBot(botId);
     return supervisor.resetWebThread();
@@ -122,7 +125,7 @@ export class BotManager {
     return supervisor.resolvePendingApproval({
       threadId,
       approvalId,
-      decision
+      decision,
     });
   }
 
@@ -199,7 +202,7 @@ export class BotManager {
       id,
       removed: true,
       purgeData,
-      purgeWorkspace
+      purgeWorkspace,
     };
   }
 
@@ -210,12 +213,12 @@ export class BotManager {
       .filter((entry) => entry.isDirectory())
       .map((entry) => ({
         name: entry.name,
-        path: path.join(this.projectsBaseDir, entry.name)
+        path: path.join(this.projectsBaseDir, entry.name),
       }))
       .sort((a, b) => a.name.localeCompare(b.name));
     return {
       baseDir: this.projectsBaseDir,
-      projects
+      projects,
     };
   }
 
@@ -225,7 +228,7 @@ export class BotManager {
     await fs.mkdir(projectPath, { recursive: true });
     return {
       name: normalized,
-      path: projectPath
+      path: projectPath,
     };
   }
 
@@ -249,7 +252,7 @@ export class BotManager {
       maxMessages: this.maxMessages,
       webPublicBaseUrl: this.webPublicBaseUrl,
       workerScriptPath: this.workerScriptPath,
-      onKernelAction: (request) => this.#dispatchKernelAction(request)
+      onKernelAction: (request) => this.#dispatchKernelAction(request),
     });
   }
 
@@ -326,8 +329,8 @@ export class BotManager {
         process.cwd(),
         os.homedir(),
         this.projectsBaseDir,
-        this.botDataRootDir
-      ].filter(Boolean)
+        this.botDataRootDir,
+      ].filter(Boolean),
     });
 
     await fs.rm(target, { recursive: true, force: true });
@@ -360,7 +363,9 @@ function isSubPath(candidatePath, rootPath) {
   if (normalizedCandidate === normalizedRoot) {
     return false;
   }
-  const rootWithSep = normalizedRoot.endsWith(path.sep) ? normalizedRoot : `${normalizedRoot}${path.sep}`;
+  const rootWithSep = normalizedRoot.endsWith(path.sep)
+    ? normalizedRoot
+    : `${normalizedRoot}${path.sep}`;
   return normalizedCandidate.startsWith(rootWithSep);
 }
 
@@ -380,7 +385,9 @@ function assertSafePurgeTarget(targetPath, { label, protectedPaths }) {
       throw new Error(`Refusing to purge protected ${label} path: ${normalizedTarget}`);
     }
     if (isSubPath(protectedPath, normalizedTarget)) {
-      throw new Error(`Refusing to purge ${label} path that contains protected path: ${normalizedTarget}`);
+      throw new Error(
+        `Refusing to purge ${label} path that contains protected path: ${normalizedTarget}`,
+      );
     }
   }
 }

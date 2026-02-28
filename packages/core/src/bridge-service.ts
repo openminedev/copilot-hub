@@ -1,4 +1,5 @@
-import { normalizeThreadId } from "@copilot-hub/core/thread-id";
+// @ts-nocheck
+import { normalizeThreadId } from "./thread-id.js";
 
 const DEFAULT_MAX_MESSAGES = 200;
 
@@ -9,7 +10,7 @@ export class ConversationEngine {
     projectRoot,
     turnActivityTimeoutMs,
     maxMessages = DEFAULT_MAX_MESSAGES,
-    onApprovalRequested = null
+    onApprovalRequested = null,
   }) {
     this.store = store;
     this.assistantProvider = assistantProvider;
@@ -20,7 +21,8 @@ export class ConversationEngine {
     this.threadByProviderSession = new Map();
     this.turnContextByThread = new Map();
     this.pendingApprovalsByThread = new Map();
-    this.onApprovalRequested = typeof onApprovalRequested === "function" ? onApprovalRequested : null;
+    this.onApprovalRequested =
+      typeof onApprovalRequested === "function" ? onApprovalRequested : null;
 
     this.assistantProvider.on("approvalRequested", (approval) => {
       void this.#handleApprovalRequested(approval).catch((error) => {
@@ -34,16 +36,19 @@ export class ConversationEngine {
     this.assistantProvider.setWorkspaceRoot(projectRoot);
   }
 
-  async sendTurn({ threadId, prompt, source, metadata = {} }) {
+  async sendTurn({ threadId, prompt, source, metadata = {}, inputItems = [] }) {
     const normalizedThreadId = normalizeThreadId(threadId);
     const text = String(prompt ?? "").trim();
+    const normalizedInputItems = Array.isArray(inputItems) ? [...inputItems] : [];
     const normalizedSource = normalizeSource(source);
-    if (!text) {
+    if (!text && normalizedInputItems.length === 0) {
       throw new Error("Message cannot be empty.");
     }
 
     return this.#queue(normalizedThreadId, async () => {
-      const previous = (await this.store.getThread(normalizedThreadId)) ?? (await this.store.ensureThread(normalizedThreadId));
+      const previous =
+        (await this.store.getThread(normalizedThreadId)) ??
+        (await this.store.ensureThread(normalizedThreadId));
       const previousProviderSessionId = String(previous.sessionId ?? "").trim();
       if (previousProviderSessionId) {
         this.threadByProviderSession.set(previousProviderSessionId, normalizedThreadId);
@@ -54,27 +59,30 @@ export class ConversationEngine {
         {
           role: "user",
           source: normalizedSource,
-          text
+          text: text || "[non-text message]",
         },
-        this.maxMessages
+        this.maxMessages,
       );
 
       this.turnContextByThread.set(normalizedThreadId, {
         source: normalizedSource,
-        metadata: { ...metadata }
+        metadata: { ...metadata },
       });
 
       const result = await this.assistantProvider.sendTurn({
         sessionId: previous.sessionId,
         prompt: text,
+        inputItems: normalizedInputItems,
         turnActivityTimeoutMs: this.turnActivityTimeoutMs,
         onSessionReady: async (providerSessionId) => {
           this.threadByProviderSession.set(String(providerSessionId), normalizedThreadId);
-        }
+        },
       });
       this.threadByProviderSession.set(result.sessionId, normalizedThreadId);
 
-      const assistantText = (result.assistantText || "Assistant provider returned no text output.").trim();
+      const assistantText = (
+        result.assistantText || "Assistant provider returned no text output."
+      ).trim();
       const thread = await this.store.upsertThread(normalizedThreadId, (current) => ({
         ...current,
         sessionId: result.sessionId ?? current.sessionId ?? null,
@@ -86,28 +94,30 @@ export class ConversationEngine {
             {
               role: "assistant",
               source: normalizedSource,
-              text: assistantText
-            }
+              text: assistantText,
+            },
           ],
-          this.maxMessages
-        )
+          this.maxMessages,
+        ),
       }));
 
       return {
         threadId: normalizedThreadId,
         thread,
         assistantText,
-        mode: this.assistantProvider.kind
+        mode: this.assistantProvider.kind,
       };
     });
   }
 
   async getThread(threadId) {
     const normalizedThreadId = normalizeThreadId(threadId);
-    const thread = (await this.store.getThread(normalizedThreadId)) ?? (await this.store.ensureThread(normalizedThreadId));
+    const thread =
+      (await this.store.getThread(normalizedThreadId)) ??
+      (await this.store.ensureThread(normalizedThreadId));
     return {
       threadId: normalizedThreadId,
-      thread
+      thread,
     };
   }
 
@@ -116,7 +126,7 @@ export class ConversationEngine {
     const messages = await this.store.listMessages(normalizedThreadId, limit);
     return {
       threadId: normalizedThreadId,
-      messages
+      messages,
     };
   }
 
@@ -130,14 +140,16 @@ export class ConversationEngine {
     }
     return {
       threadId: normalizedThreadId,
-      thread
+      thread,
     };
   }
 
   listPendingApprovals(threadId = null) {
     if (threadId) {
       const normalizedThreadId = normalizeThreadId(threadId);
-      return [...(this.pendingApprovalsByThread.get(normalizedThreadId) ?? [])].map((entry) => ({ ...entry }));
+      return [...(this.pendingApprovalsByThread.get(normalizedThreadId) ?? [])].map((entry) => ({
+        ...entry,
+      }));
     }
 
     const all = [];
@@ -163,27 +175,29 @@ export class ConversationEngine {
 
     const resolved = await this.assistantProvider.resolveApproval({
       approvalId: target.id,
-      decision
+      decision,
     });
     this.pendingApprovalsByThread.set(
       normalizedThreadId,
-      approvals.filter((entry) => entry.id !== target.id)
+      approvals.filter((entry) => entry.id !== target.id),
     );
     return {
       ...target,
-      decision: resolved.decision
+      decision: resolved.decision,
     };
   }
 
   async interruptThread(threadId) {
     const normalizedThreadId = normalizeThreadId(threadId);
-    const thread = (await this.store.getThread(normalizedThreadId)) ?? (await this.store.ensureThread(normalizedThreadId));
+    const thread =
+      (await this.store.getThread(normalizedThreadId)) ??
+      (await this.store.ensureThread(normalizedThreadId));
     const sessionId = String(thread?.sessionId ?? "").trim();
     if (!sessionId) {
       return {
         threadId: normalizedThreadId,
         interrupted: false,
-        reason: "no_active_session"
+        reason: "no_active_session",
       };
     }
 
@@ -192,18 +206,18 @@ export class ConversationEngine {
         threadId: normalizedThreadId,
         sessionId,
         interrupted: false,
-        reason: "not_supported"
+        reason: "not_supported",
       };
     }
 
     try {
       const result = await this.assistantProvider.interruptTurn({
-        sessionId
+        sessionId,
       });
       return {
         threadId: normalizedThreadId,
         sessionId,
-        ...(result && typeof result === "object" ? result : {})
+        ...(result && typeof result === "object" ? result : {}),
       };
     } catch (error) {
       return {
@@ -211,7 +225,7 @@ export class ConversationEngine {
         sessionId,
         interrupted: false,
         reason: "error",
-        error: sanitizeError(error)
+        error: sanitizeError(error),
       };
     }
   }
@@ -261,7 +275,7 @@ export class ConversationEngine {
       cwd: approval.cwd,
       reason: approval.reason,
       commandActions: approval.commandActions,
-      createdAt: approval.createdAt
+      createdAt: approval.createdAt,
     };
 
     const previousEntries = this.pendingApprovalsByThread.get(bridgeThreadId) ?? [];
@@ -270,12 +284,15 @@ export class ConversationEngine {
     if (!this.onApprovalRequested) {
       return;
     }
-    const context = this.turnContextByThread.get(bridgeThreadId) ?? { source: "internal", metadata: {} };
+    const context = this.turnContextByThread.get(bridgeThreadId) ?? {
+      source: "internal",
+      metadata: {},
+    };
     try {
       await this.onApprovalRequested({
         ...entry,
         source: context.source,
-        metadata: context.metadata
+        metadata: context.metadata,
       });
     } catch (error) {
       console.error(`onApprovalRequested failed: ${sanitizeError(error)}`);
@@ -284,7 +301,10 @@ export class ConversationEngine {
 }
 
 function trimMessages(messages, maxMessages) {
-  const safeMax = Number.isFinite(maxMessages) && maxMessages > 0 ? Math.min(maxMessages, 1000) : DEFAULT_MAX_MESSAGES;
+  const safeMax =
+    Number.isFinite(maxMessages) && maxMessages > 0
+      ? Math.min(maxMessages, 1000)
+      : DEFAULT_MAX_MESSAGES;
   if (messages.length <= safeMax) {
     return messages;
   }

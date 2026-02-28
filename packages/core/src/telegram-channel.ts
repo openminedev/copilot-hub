@@ -1,4 +1,5 @@
-﻿import fs from "node:fs/promises";
+// @ts-nocheck
+import fs from "node:fs/promises";
 import path from "node:path";
 import { Bot } from "grammy";
 
@@ -37,13 +38,15 @@ export class TelegramChannel {
       .start({
         onStart: () => {
           console.log(`[${this.runtime.runtimeId}:${this.id}] Telegram polling started.`);
-        }
+        },
       })
       .catch((error) => {
         this.error = sanitizeError(error);
         this.running = false;
         this.bot = null;
-        console.error(`[${this.runtime.runtimeId}:${this.id}] Telegram polling error: ${this.error}`);
+        console.error(
+          `[${this.runtime.runtimeId}:${this.id}] Telegram polling error: ${this.error}`,
+        );
       });
 
     return this.getStatus();
@@ -73,7 +76,7 @@ export class TelegramChannel {
       kind: this.kind,
       id: this.id,
       running: this.running,
-      error: this.error
+      error: this.error,
     };
   }
 
@@ -86,7 +89,7 @@ export class TelegramChannel {
     const lines = [
       `Approval required [${approval.id}]`,
       `type: ${approval.kind}`,
-      `thread: ${approval.threadId}`
+      `thread: ${approval.threadId}`,
     ];
     if (approval.command) {
       lines.push(`command: ${approval.command}`);
@@ -113,7 +116,7 @@ export class TelegramChannel {
       const threadId = await this.runtime.resolveThreadIdForChannel({
         channelKind: this.kind,
         channelId: this.id,
-        externalUserId: chatId
+        externalUserId: chatId,
       });
       await context.reply(
         [
@@ -134,10 +137,10 @@ export class TelegramChannel {
           "/denyall - deny all pending actions",
           "/whoami - show Telegram chat id",
           `Web: ${this.runtime.buildWebBotUrl()}`,
-          `threadId: ${threadId}`
+          `threadId: ${threadId}`,
         ]
           .filter(Boolean)
-          .join("\n")
+          .join("\n"),
       );
     });
 
@@ -151,7 +154,7 @@ export class TelegramChannel {
       const threadId = await this.runtime.resolveThreadIdForChannel({
         channelKind: this.kind,
         channelId: this.id,
-        externalUserId: chatId
+        externalUserId: chatId,
       });
       await context.reply(`threadId: ${threadId}`);
     });
@@ -166,7 +169,7 @@ export class TelegramChannel {
       const threadId = await this.runtime.resolveThreadIdForChannel({
         channelKind: this.kind,
         channelId: this.id,
-        externalUserId: chatId
+        externalUserId: chatId,
       });
       await this.runtime.resetThread(threadId);
       await context.reply(`Thread '${threadId}' reset.`);
@@ -182,7 +185,7 @@ export class TelegramChannel {
       const threadId = await this.runtime.resolveThreadIdForChannel({
         channelKind: this.kind,
         channelId: this.id,
-        externalUserId: chatId
+        externalUserId: chatId,
       });
       const { thread } = await this.runtime.getThread(threadId);
       await context.reply(
@@ -192,8 +195,8 @@ export class TelegramChannel {
           `turnCount: ${thread.turnCount ?? 0}`,
           `sessionId: ${thread.sessionId ?? "<none>"}`,
           `updatedAt: ${thread.updatedAt ?? "<unknown>"}`,
-          `web: ${this.runtime.buildWebBotUrl()}`
-        ].join("\n")
+          `web: ${this.runtime.buildWebBotUrl()}`,
+        ].join("\n"),
       );
     });
 
@@ -220,7 +223,7 @@ export class TelegramChannel {
       const threadId = await this.runtime.resolveThreadIdForChannel({
         channelKind: this.kind,
         channelId: this.id,
-        externalUserId: chatId
+        externalUserId: chatId,
       });
       const approvals = await this.runtime.listPendingApprovals(threadId);
       if (approvals.length === 0) {
@@ -264,7 +267,7 @@ export class TelegramChannel {
       if (!chatId || !this.#isAllowedChat(chatId)) {
         await context.answerCallbackQuery({
           text: "Chat not allowed for this bot.",
-          show_alert: true
+          show_alert: true,
         });
         return;
       }
@@ -272,7 +275,7 @@ export class TelegramChannel {
       const active = this.#getActiveTurn(chatId);
       if (!active || active.token !== payload.token) {
         await context.answerCallbackQuery({
-          text: "No active generation for this action."
+          text: "No active generation for this action.",
         });
         return;
       }
@@ -280,10 +283,17 @@ export class TelegramChannel {
       if (payload.action === "stop") {
         const result = await this.runtime.interruptThread(active.threadId);
         if (result?.interrupted === true) {
-          await this.#closeTurnControls(chatId, payload.token, "Generation interruption requested.");
+          await this.#closeTurnControls(
+            chatId,
+            payload.token,
+            "Generation interruption requested.",
+          );
         }
         await context.answerCallbackQuery({
-          text: result?.interrupted === true ? "Interruption requested." : "No active generation to stop."
+          text:
+            result?.interrupted === true
+              ? "Interruption requested."
+              : "No active generation to stop.",
         });
         return;
       }
@@ -305,7 +315,7 @@ export class TelegramChannel {
       await this.#routeIncomingPrompt({
         chatId,
         prompt: text,
-        mode: "auto_message"
+        mode: "auto_message",
       });
     });
 
@@ -324,7 +334,7 @@ export class TelegramChannel {
           chatId,
           prompt,
           mode: "auto_message",
-          inputItems: [photoInput]
+          inputItems: [photoInput],
         });
       } catch (error) {
         await context.reply(`Unable to process photo:\n${sanitizeError(error)}`);
@@ -341,12 +351,12 @@ export class TelegramChannel {
       try {
         const prompt = await this.#buildVoicePrompt({
           chatId,
-          message: context.message
+          message: context.message,
         });
         await this.#routeIncomingPrompt({
           chatId,
           prompt,
-          mode: "auto_message"
+          mode: "auto_message",
         });
       } catch (error) {
         await context.reply(`Unable to process voice note:\n${sanitizeError(error)}`);
@@ -354,9 +364,14 @@ export class TelegramChannel {
     });
 
     bot.catch((error) => {
-      const details = error.error instanceof Error ? error.error.stack ?? error.error.message : String(error.error);
+      const details =
+        error.error instanceof Error
+          ? (error.error.stack ?? error.error.message)
+          : String(error.error);
       this.error = details;
-      console.error(`[${this.runtime.runtimeId}:${this.id}] Telegram error in update ${error.ctx.update.update_id}: ${details}`);
+      console.error(
+        `[${this.runtime.runtimeId}:${this.id}] Telegram error in update ${error.ctx.update.update_id}: ${details}`,
+      );
     });
   }
 
@@ -372,7 +387,7 @@ export class TelegramChannel {
     const threadId = await this.runtime.resolveThreadIdForChannel({
       channelKind: this.kind,
       channelId: this.id,
-      externalUserId: chatId
+      externalUserId: chatId,
     });
 
     const activeTurn = this.#getActiveTurn(chatId);
@@ -382,7 +397,7 @@ export class TelegramChannel {
         threadId,
         prompt: normalizedPrompt,
         mode,
-        inputItems
+        inputItems,
       });
       return;
     }
@@ -391,7 +406,7 @@ export class TelegramChannel {
       chatId,
       threadId,
       prompt: normalizedPrompt,
-      inputItems
+      inputItems,
     });
   }
 
@@ -422,14 +437,16 @@ export class TelegramChannel {
     const binary = await this.#downloadTelegramBinary(telegramPath);
     const maxBytes = 8 * 1024 * 1024;
     if (binary.length > maxBytes) {
-      throw new Error(`Photo is too large for direct model upload (${binary.length} bytes). Please send a smaller image.`);
+      throw new Error(
+        `Photo is too large for direct model upload (${binary.length} bytes). Please send a smaller image.`,
+      );
     }
 
     const mime = mimeTypeFromExtension(path.extname(telegramPath), "image/jpeg");
     const dataUrl = `data:${mime};base64,${binary.toString("base64")}`;
     return {
       type: "image",
-      url: dataUrl
+      url: dataUrl,
     };
   }
 
@@ -443,7 +460,7 @@ export class TelegramChannel {
       chatId,
       fileId: String(voice.file_id ?? "").trim(),
       mediaKind: "voice",
-      preferredExtension: extensionFromMimeType(voice.mime_type)
+      preferredExtension: extensionFromMimeType(voice.mime_type),
     });
     const caption = String(message?.caption ?? "").trim();
 
@@ -452,13 +469,13 @@ export class TelegramChannel {
       `file_path: ${stored.relativePath}`,
       `absolute_path: ${stored.absolutePath}`,
       `duration_seconds: ${Number(voice.duration ?? 0)}`,
-      `mime_type: ${String(voice.mime_type ?? "audio/ogg")}`
+      `mime_type: ${String(voice.mime_type ?? "audio/ogg")}`,
     ];
     if (caption) {
       lines.push(`caption: ${caption}`);
     }
     lines.push(
-      "Task: transcribe the audio first, then answer the user request. If transcription is not possible with available tools, explain what is missing."
+      "Task: transcribe the audio first, then answer the user request. If transcription is not possible with available tools, explain what is missing.",
     );
     return lines.join("\n");
   }
@@ -517,7 +534,7 @@ export class TelegramChannel {
       "telegram",
       sanitizePathSegment(this.id),
       sanitizePathSegment(chatId),
-      day
+      day,
     );
     await fs.mkdir(targetDir, { recursive: true });
 
@@ -527,10 +544,12 @@ export class TelegramChannel {
     const payload = await this.#downloadTelegramBinary(telegramPath);
     await fs.writeFile(absolutePath, payload);
 
-    const relativePath = normalizePathForPrompt(path.relative(workspaceRoot, absolutePath) || fileName);
+    const relativePath = normalizePathForPrompt(
+      path.relative(workspaceRoot, absolutePath) || fileName,
+    );
     return {
       absolutePath: normalizePathForPrompt(absolutePath),
-      relativePath
+      relativePath,
     };
   }
 
@@ -559,10 +578,14 @@ export class TelegramChannel {
         source: "telegram",
         metadata: {
           chatId,
-          channelId: this.id
-        }
+          channelId: this.id,
+        },
       });
-      await sendChunkedMessage(this.bot.api, chatId, result.assistantText || "Assistant returned no text output.");
+      await sendChunkedMessage(
+        this.bot.api,
+        chatId,
+        result.assistantText || "Assistant returned no text output.",
+      );
     } catch (error) {
       const safe = sanitizeError(error);
       if (isTurnInterruptedError(safe)) {
@@ -588,7 +611,7 @@ export class TelegramChannel {
     const threadId = await this.runtime.resolveThreadIdForChannel({
       channelKind: this.kind,
       channelId: this.id,
-      externalUserId: chatId
+      externalUserId: chatId,
     });
     const result = await this.runtime.interruptThread(threadId);
     await context.reply(formatInterruptResult(result));
@@ -605,7 +628,7 @@ export class TelegramChannel {
     const threadId = await this.runtime.resolveThreadIdForChannel({
       channelKind: this.kind,
       channelId: this.id,
-      externalUserId: chatId
+      externalUserId: chatId,
     });
 
     if (!instruction) {
@@ -618,7 +641,7 @@ export class TelegramChannel {
       chatId,
       threadId,
       prompt,
-      mode: "command_steer"
+      mode: "command_steer",
     });
   }
 
@@ -626,7 +649,7 @@ export class TelegramChannel {
     const token = `turn_${Date.now()}_${this.nextTurnToken++}`;
     this.activeTurnsByChat.set(String(chatId), {
       threadId: String(threadId),
-      token
+      token,
     });
     return token;
   }
@@ -647,7 +670,13 @@ export class TelegramChannel {
     return this.activeTurnsByChat.get(String(chatId)) ?? null;
   }
 
-  async #applySteerInstruction({ chatId, threadId, prompt, mode = "command_steer", inputItems = null }) {
+  async #applySteerInstruction({
+    chatId,
+    threadId,
+    prompt,
+    mode = "command_steer",
+    inputItems = null,
+  }) {
     const nextPrompt = String(prompt ?? "").trim();
     if (!nextPrompt) {
       if (this.bot) {
@@ -662,17 +691,32 @@ export class TelegramChannel {
       const reason = String(interruption?.reason ?? "")
         .trim()
         .toLowerCase();
-      if (!(interruption?.interrupted === true || reason === "no_active_turn" || reason === "no_active_session")) {
+      if (
+        !(
+          interruption?.interrupted === true ||
+          reason === "no_active_turn" ||
+          reason === "no_active_session"
+        )
+      ) {
         if (this.bot) {
-          await this.bot.api.sendMessage(chatId, `Unable to apply steer now.\n${formatInterruptResult(interruption)}`);
+          await this.bot.api.sendMessage(
+            chatId,
+            `Unable to apply steer now.\n${formatInterruptResult(interruption)}`,
+          );
         }
         return;
       }
       if (this.bot) {
         if (mode === "auto_message") {
-          await this.bot.api.sendMessage(chatId, "New message received. Generation interrupted, applying it now.");
+          await this.bot.api.sendMessage(
+            chatId,
+            "New message received. Generation interrupted, applying it now.",
+          );
         } else {
-          await this.bot.api.sendMessage(chatId, "Steer accepted. Generation interrupted, applying instruction now.");
+          await this.bot.api.sendMessage(
+            chatId,
+            "Steer accepted. Generation interrupted, applying instruction now.",
+          );
         }
       }
     } else if (this.bot) {
@@ -687,7 +731,7 @@ export class TelegramChannel {
       chatId,
       threadId,
       prompt: nextPrompt,
-      inputItems
+      inputItems,
     });
   }
 
@@ -700,12 +744,12 @@ export class TelegramChannel {
     await this.#closeTurnControls(chatId, null, null);
     try {
       const sent = await this.bot.api.sendMessage(chatId, "Generation in progress.", {
-        reply_markup: buildTurnControlKeyboard(token)
+        reply_markup: buildTurnControlKeyboard(token),
       });
       this.turnControlByChat.set(key, {
         token: String(token),
         threadId: String(threadId),
-        messageId: Number(sent?.message_id ?? 0)
+        messageId: Number(sent?.message_id ?? 0),
       });
     } catch {
       // Non critical UI helper only.
@@ -731,14 +775,14 @@ export class TelegramChannel {
       if (finalText) {
         await this.bot.api.editMessageText(chatId, current.messageId, String(finalText), {
           reply_markup: {
-            inline_keyboard: []
-          }
+            inline_keyboard: [],
+          },
         });
       } else {
         await this.bot.api.editMessageReplyMarkup(chatId, current.messageId, {
           reply_markup: {
-            inline_keyboard: []
-          }
+            inline_keyboard: [],
+          },
         });
       }
     } catch {
@@ -756,7 +800,7 @@ export class TelegramChannel {
     const threadId = await this.runtime.resolveThreadIdForChannel({
       channelKind: this.kind,
       channelId: this.id,
-      externalUserId: chatId
+      externalUserId: chatId,
     });
     const requestedId = extractFirstCommandArgument(context.message.text);
     if (requestedId.toLowerCase() === "all") {
@@ -775,7 +819,7 @@ export class TelegramChannel {
     await this.runtime.resolvePendingApproval({
       threadId,
       approvalId: target.id,
-      decision
+      decision,
     });
 
     if (decision === "decline") {
@@ -799,12 +843,12 @@ export class TelegramChannel {
     const threadId = await this.runtime.resolveThreadIdForChannel({
       channelKind: this.kind,
       channelId: this.id,
-      externalUserId: chatId
+      externalUserId: chatId,
     });
 
     const summary = await this.#resolveAllApprovals({
       threadId,
-      decision
+      decision,
     });
     await context.reply(summary);
   }
@@ -822,7 +866,7 @@ export class TelegramChannel {
         await this.runtime.resolvePendingApproval({
           threadId,
           approvalId: approval.id,
-          decision
+          decision,
         });
         successCount += 1;
       } catch {
@@ -830,7 +874,12 @@ export class TelegramChannel {
       }
     }
 
-    const decisionLabel = decision === "decline" ? "denied" : decision === "acceptForSession" ? "approved (session)" : "approved";
+    const decisionLabel =
+      decision === "decline"
+        ? "denied"
+        : decision === "acceptForSession"
+          ? "approved (session)"
+          : "approved";
     if (failedIds.length === 0) {
       return `${successCount}/${approvals.length} approvals ${decisionLabel}.`;
     }
@@ -911,7 +960,9 @@ function formatInterruptResult(result) {
     return "Generation interruption requested.";
   }
 
-  const reason = String(result.reason ?? "").trim().toLowerCase();
+  const reason = String(result.reason ?? "")
+    .trim()
+    .toLowerCase();
   if (reason === "no_active_turn" || reason === "no_active_session") {
     return "No active generation to stop.";
   }
@@ -929,12 +980,14 @@ function buildSteerPrompt(instruction) {
   return [
     "Steer instruction from user:",
     text,
-    "Continue by strictly applying this steering."
+    "Continue by strictly applying this steering.",
   ].join("\n");
 }
 
 function isTurnInterruptedError(message) {
-  const normalized = String(message ?? "").trim().toLowerCase();
+  const normalized = String(message ?? "")
+    .trim()
+    .toLowerCase();
   if (!normalized) {
     return false;
   }
@@ -1015,11 +1068,7 @@ function sanitizeError(error) {
 
 function normalizeAllowedChatIds(value) {
   if (Array.isArray(value)) {
-    return new Set(
-      value
-        .map((entry) => String(entry ?? "").trim())
-        .filter(Boolean)
-    );
+    return new Set(value.map((entry) => String(entry ?? "").trim()).filter(Boolean));
   }
 
   if (typeof value === "string") {
@@ -1027,7 +1076,7 @@ function normalizeAllowedChatIds(value) {
       value
         .split(",")
         .map((entry) => entry.trim())
-        .filter(Boolean)
+        .filter(Boolean),
     );
   }
 
@@ -1038,7 +1087,7 @@ function buildTurnControlKeyboard(token) {
   const safeToken = String(token ?? "").trim();
   if (!safeToken) {
     return {
-      inline_keyboard: []
+      inline_keyboard: [],
     };
   }
 
@@ -1047,10 +1096,10 @@ function buildTurnControlKeyboard(token) {
       [
         {
           text: "Interrompre",
-          callback_data: `turnctl:stop:${safeToken}`
-        }
-      ]
-    ]
+          callback_data: `turnctl:stop:${safeToken}`,
+        },
+      ],
+    ],
   };
 }
 
@@ -1062,11 +1111,6 @@ function parseTurnControlCallbackData(raw) {
   }
   return {
     action: match[1],
-    token: match[2]
+    token: match[2],
   };
 }
-
-
-
-
-

@@ -1,4 +1,5 @@
-import { BotRuntime } from "./bot-runtime.js";
+import { BotRuntime } from "@copilot-hub/core/bot-runtime";
+import { createChannelAdapter } from "./channels/channel-factory.js";
 
 const rawBotConfig = String(process.env.AGENT_BOT_CONFIG_JSON ?? "").trim();
 const rawProviderDefaults = String(process.env.AGENT_PROVIDER_DEFAULTS_JSON ?? "").trim();
@@ -27,7 +28,8 @@ const runtime = new BotRuntime({
   maxMessages,
   kernelControl: {
     request: (payload) => requestKernelAction(payload)
-  }
+  },
+  channelAdapterFactory: createChannelAdapter
 });
 runtime.setWebPublicBaseUrl(initialWebPublicBaseUrl);
 
