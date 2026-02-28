@@ -3,7 +3,7 @@ import path from "node:path";
 import dotenv from "dotenv";
 import { createWorkspaceBoundaryPolicy, assertWorkspaceAllowed, parseWorkspaceAllowedRoots } from "@copilot-hub/core/workspace-policy";
 import { normalizeAdminBotId, normalizeAdminTokenEnv } from "./kernel/admin-contract.js";
-import { getDefaultExternalWorkspaceBasePath, getKernelRootPath } from "./workspace-paths.js";
+import { getDefaultExternalWorkspaceBasePath, getKernelRootPath } from "@copilot-hub/core/workspace-paths";
 
 dotenv.config();
 

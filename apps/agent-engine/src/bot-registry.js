@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { assertWorkspaceAllowed } from "@copilot-hub/core/workspace-policy";
-import { getKernelRootPath, isPathInside } from "./workspace-paths.js";
+import { getKernelRootPath, isPathInside } from "@copilot-hub/core/workspace-paths";
 
 const REGISTRY_VERSION = 3;
 const BOT_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;

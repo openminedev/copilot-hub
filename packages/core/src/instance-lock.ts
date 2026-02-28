@@ -2,35 +2,38 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 export class InstanceLock {
-  constructor(lockFilePath) {
+  lockFilePath: string;
+  owned: boolean;
+
+  constructor(lockFilePath: unknown) {
     this.lockFilePath = path.resolve(String(lockFilePath));
     this.owned = false;
   }
 
-  async acquire() {
+  async acquire(): Promise<void> {
     await fs.mkdir(path.dirname(this.lockFilePath), { recursive: true });
 
     try {
-      await this.#writeLockFile();
+      await this.writeLockFile();
       this.owned = true;
       return;
     } catch (error) {
-      if (error?.code !== "EEXIST") {
+      if (getErrorCode(error) !== "EEXIST") {
         throw error;
       }
     }
 
-    const stale = await this.#detectStaleLock();
+    const stale = await this.detectStaleLock();
     if (!stale) {
       throw new Error(`Another bridge instance is already running (lock: ${this.lockFilePath}).`);
     }
 
     await fs.rm(this.lockFilePath, { force: true });
-    await this.#writeLockFile();
+    await this.writeLockFile();
     this.owned = true;
   }
 
-  async release() {
+  async release(): Promise<void> {
     if (!this.owned) {
       return;
     }
@@ -38,23 +41,23 @@ export class InstanceLock {
     this.owned = false;
   }
 
-  async #writeLockFile() {
+  private async writeLockFile(): Promise<void> {
     const payload = JSON.stringify(
       {
         pid: process.pid,
         createdAt: new Date().toISOString(),
-        cwd: process.cwd()
+        cwd: process.cwd(),
       },
       null,
-      2
+      2,
     );
     await fs.writeFile(this.lockFilePath, `${payload}\n`, { encoding: "utf8", flag: "wx" });
   }
 
-  async #detectStaleLock() {
+  private async detectStaleLock(): Promise<boolean> {
     try {
       const raw = await fs.readFile(this.lockFilePath, "utf8");
-      const lock = JSON.parse(raw);
+      const lock = JSON.parse(raw) as { pid?: unknown };
       const pid = Number.parseInt(String(lock?.pid ?? ""), 10);
       if (!Number.isFinite(pid) || pid < 1) {
         return true;
@@ -69,4 +72,13 @@ export class InstanceLock {
       return true;
     }
   }
+}
+
+function getErrorCode(error: unknown): string {
+  if (!error || typeof error !== "object") {
+    return "";
+  }
+  return String((error as { code?: unknown }).code ?? "")
+    .trim()
+    .toUpperCase();
 }

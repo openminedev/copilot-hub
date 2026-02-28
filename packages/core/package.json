@@ -25,6 +25,14 @@
     "./project-fingerprint": {
       "types": "./dist/project-fingerprint.d.ts",
       "import": "./dist/project-fingerprint.js"
+    },
+    "./workspace-paths": {
+      "types": "./dist/workspace-paths.d.ts",
+      "import": "./dist/workspace-paths.js"
+    },
+    "./instance-lock": {
+      "types": "./dist/instance-lock.d.ts",
+      "import": "./dist/instance-lock.js"
     }
   },
   "files": [
