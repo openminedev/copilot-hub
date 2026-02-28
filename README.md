@@ -85,7 +85,7 @@ npm run start
 
 `start` checks required tokens and prompts only if values are missing.
 
-## Telegram setup (step-by-step, no external docs needed)
+## Telegram setup
 
 ### 1) Create the control-plane (hub) bot token
 

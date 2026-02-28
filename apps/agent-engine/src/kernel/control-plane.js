@@ -4,7 +4,7 @@ import { loadBotRegistry } from "../bot-registry.js";
 import { scaffoldCapabilityInWorkspace, normalizeCapabilityId, normalizeCapabilityName } from "./capability-scaffold.js";
 import { CONTROL_ACTIONS, requireControlAction } from "./control-plane-actions.js";
 import { getExtensionContract } from "./extension-contract.js";
-import { assertControlPermission } from "./control-plane-policy.js";
+import { assertControlPermission } from "@copilot-hub/core/control-permission";
 
 export class KernelControlPlane {
   constructor({ botManager, registryFilePath, registryLoadOptions, secretStore = null }) {

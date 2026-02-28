@@ -16,3 +16,4 @@ export {
 } from "./workspace-paths.js";
 export { InstanceLock } from "./instance-lock.js";
 export { JsonStateStore } from "./state-store.js";
+export { assertControlPermission } from "./control-permission.js";

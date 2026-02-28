@@ -1,6 +1,34 @@
-import { normalizeControlAction } from "./control-plane-actions.js";
+interface KernelAccessConfig {
+  enabled: boolean;
+  allowedActions: string[];
+  allowedChatIds: string[];
+}
 
-export function assertControlPermission({ supervisor, action, source, metadata }) {
+interface SupervisorLike {
+  id?: unknown;
+  config?: {
+    id?: unknown;
+    kernelAccess?: unknown;
+    channels?: unknown;
+  };
+}
+
+interface AssertControlPermissionOptions {
+  supervisor: SupervisorLike | null | undefined;
+  action: unknown;
+  source?: unknown;
+  metadata?: {
+    channelId?: unknown;
+    chatId?: unknown;
+  } | null;
+}
+
+export function assertControlPermission({
+  supervisor,
+  action,
+  source,
+  metadata,
+}: AssertControlPermissionOptions): void {
   if (!supervisor || typeof supervisor !== "object") {
     throw new Error("Agent supervisor is required for control permission checks.");
   }
@@ -16,12 +44,14 @@ export function assertControlPermission({ supervisor, action, source, metadata }
     throw new Error(`Action '${normalizedAction}' is not allowed for agent '${agentId}'.`);
   }
 
-  const normalizedSource = String(source ?? "").trim().toLowerCase();
+  const normalizedSource = String(source ?? "")
+    .trim()
+    .toLowerCase();
   if (normalizedSource === "telegram") {
     const allowedChatIds = resolveAllowedChatIds({
       kernelAccess,
       supervisor,
-      channelId: metadata?.channelId
+      channelId: metadata?.channelId,
     });
     if (allowedChatIds.size > 0) {
       const chatId = String(metadata?.chatId ?? "").trim();
@@ -32,19 +62,25 @@ export function assertControlPermission({ supervisor, action, source, metadata }
   }
 }
 
-function normalizeKernelAccess(value) {
-  const raw = value && typeof value === "object" ? value : {};
+function normalizeControlAction(value: unknown): string {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase();
+}
+
+function normalizeKernelAccess(value: unknown): KernelAccessConfig {
+  const raw = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
   const enabled = raw.enabled === true;
   const allowedActions = normalizeStringArray(raw.allowedActions);
   const allowedChatIds = normalizeStringArray(raw.allowedChatIds);
   return {
     enabled,
     allowedActions,
-    allowedChatIds
+    allowedChatIds,
   };
 }
 
-function isActionAllowed(allowedActions, action) {
+function isActionAllowed(allowedActions: string[], action: string): boolean {
   if (!Array.isArray(allowedActions) || allowedActions.length === 0) {
     return false;
   }
@@ -52,34 +88,49 @@ function isActionAllowed(allowedActions, action) {
   return normalized.has("*") || normalized.has(action);
 }
 
-function resolveAllowedChatIds({ kernelAccess, supervisor, channelId }) {
+function resolveAllowedChatIds({
+  kernelAccess,
+  supervisor,
+  channelId,
+}: {
+  kernelAccess: KernelAccessConfig;
+  supervisor: SupervisorLike;
+  channelId: unknown;
+}): Set<string> {
   if (kernelAccess.allowedChatIds.length > 0) {
     return new Set(kernelAccess.allowedChatIds);
   }
 
   const requestedChannelId = String(channelId ?? "").trim();
   const channels = Array.isArray(supervisor.config?.channels) ? supervisor.config.channels : [];
-  const channel = channels.find((entry) => {
-    if (!entry || typeof entry !== "object") {
-      return false;
-    }
-    if (String(entry.kind ?? "").trim().toLowerCase() !== "telegram") {
-      return false;
-    }
-    if (!requestedChannelId) {
-      return true;
-    }
-    return String(entry.id ?? "").trim() === requestedChannelId;
-  });
+  const channel =
+    channels.find((entry) => {
+      if (!entry || typeof entry !== "object") {
+        return false;
+      }
+      const channelObj = entry as { kind?: unknown; id?: unknown };
+      if (
+        String(channelObj.kind ?? "")
+          .trim()
+          .toLowerCase() !== "telegram"
+      ) {
+        return false;
+      }
+      if (!requestedChannelId) {
+        return true;
+      }
+      return String(channelObj.id ?? "").trim() === requestedChannelId;
+    }) ?? null;
 
-  if (!channel) {
+  if (!channel || typeof channel !== "object") {
     return new Set();
   }
 
-  return new Set(normalizeStringArray(channel.allowedChatIds));
+  const allowedChatIds = (channel as { allowedChatIds?: unknown }).allowedChatIds;
+  return new Set(normalizeStringArray(allowedChatIds));
 }
 
-function normalizeStringArray(value) {
+function normalizeStringArray(value: unknown): string[] {
   if (Array.isArray(value)) {
     return uniqueStrings(value);
   }
@@ -88,15 +139,15 @@ function normalizeStringArray(value) {
       value
         .split(",")
         .map((entry) => entry.trim())
-        .filter(Boolean)
+        .filter(Boolean),
     );
   }
   return [];
 }
 
-function uniqueStrings(values) {
-  const seen = new Set();
-  const out = [];
+function uniqueStrings(values: unknown[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
   for (const value of values) {
     const normalized = String(value ?? "").trim();
     if (!normalized || seen.has(normalized)) {

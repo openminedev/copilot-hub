@@ -37,6 +37,10 @@
     "./state-store": {
       "types": "./dist/state-store.d.ts",
       "import": "./dist/state-store.js"
+    },
+    "./control-permission": {
+      "types": "./dist/control-permission.d.ts",
+      "import": "./dist/control-permission.js"
     }
   },
   "files": [

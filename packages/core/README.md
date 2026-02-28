@@ -9,5 +9,6 @@ Current modules:
 - `project-fingerprint`: stable fingerprint generator for runtime session isolation.
 - `instance-lock`: single-instance process lock helper.
 - `state-store`: persisted session/thread state helper shared by runtime apps.
+- `control-permission`: shared kernel control authorization guard.
 
 Use this package for cross-app primitives that must stay consistent across planes.
