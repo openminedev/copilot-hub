@@ -2,6 +2,11 @@
 
 Copilot Hub is a 2-plane monorepo for building and operating Telegram AI agents.
 
+## Links
+
+- GitHub repository: https://github.com/openminedev/copilot-hub
+- npm package: https://www.npmjs.com/package/copilot-hub
+
 ## Planes
 
 - `apps/control-plane`: single Telegram hub chat for operations commands and LLM development tasks.
