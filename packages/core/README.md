@@ -10,5 +10,8 @@ Current modules:
 - `instance-lock`: single-instance process lock helper.
 - `state-store`: persisted session/thread state helper shared by runtime apps.
 - `control-permission`: shared kernel control authorization guard.
+- `kernel-version`: shared kernel version constant.
+- `capability-scaffold`: capability scaffolding helpers.
+- `secret-store`: shared secret store helper.
 
 Use this package for cross-app primitives that must stay consistent across planes.

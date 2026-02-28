@@ -1,5 +1,5 @@
 import { CAPABILITY_HOOKS } from "./capability-manager.js";
-import { KERNEL_VERSION } from "./kernel-version.js";
+import { KERNEL_VERSION } from "@copilot-hub/core/kernel-version";
 
 export const EXTENSION_CONTRACT_VERSION = "1.0.0";
 

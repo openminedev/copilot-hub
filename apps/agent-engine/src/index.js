@@ -6,7 +6,7 @@ import { config } from "./config.js";
 import { InstanceLock } from "@copilot-hub/core/instance-lock";
 import { KernelControlPlane } from "./kernel/control-plane.js";
 import { CONTROL_ACTIONS } from "./kernel/control-plane-actions.js";
-import { KernelSecretStore } from "./kernel/secret-store.js";
+import { KernelSecretStore } from "@copilot-hub/core/secret-store";
 
 let activeWebPort = config.webPort;
 let runtimeWebPublicBaseUrl = config.webPublicBaseUrl;

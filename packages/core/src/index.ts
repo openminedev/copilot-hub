@@ -17,3 +17,10 @@ export {
 export { InstanceLock } from "./instance-lock.js";
 export { JsonStateStore } from "./state-store.js";
 export { assertControlPermission } from "./control-permission.js";
+export { KERNEL_VERSION } from "./kernel-version.js";
+export {
+  normalizeCapabilityId,
+  normalizeCapabilityName,
+  scaffoldCapabilityInWorkspace,
+} from "./capability-scaffold.js";
+export { KernelSecretStore } from "./secret-store.js";

@@ -4,7 +4,7 @@ import { KERNEL_VERSION } from "./kernel-version.js";
 
 const CAPABILITY_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
-export function normalizeCapabilityId(value) {
+export function normalizeCapabilityId(value: unknown): string {
   const capabilityId = String(value ?? "").trim();
   if (
     !CAPABILITY_ID_PATTERN.test(capabilityId) ||
@@ -17,7 +17,7 @@ export function normalizeCapabilityId(value) {
   return capabilityId;
 }
 
-export function normalizeCapabilityName(value, capabilityId) {
+export function normalizeCapabilityName(value: unknown, capabilityId: unknown): string {
   const fallback = String(capabilityId ?? "").trim() || "capability";
   const name = String(value ?? "").trim();
   if (!name) {
@@ -26,7 +26,17 @@ export function normalizeCapabilityName(value, capabilityId) {
   return name.slice(0, 120);
 }
 
-export async function scaffoldCapabilityInWorkspace({ workspaceRoot, capabilityId, capabilityName, kernelVersion }) {
+export async function scaffoldCapabilityInWorkspace({
+  workspaceRoot,
+  capabilityId,
+  capabilityName,
+  kernelVersion,
+}: {
+  workspaceRoot: unknown;
+  capabilityId: unknown;
+  capabilityName?: unknown;
+  kernelVersion?: unknown;
+}) {
   const resolvedWorkspaceRoot = path.resolve(String(workspaceRoot ?? "").trim() || process.cwd());
   const normalizedCapabilityId = normalizeCapabilityId(capabilityId);
   const normalizedCapabilityName = normalizeCapabilityName(capabilityName, normalizedCapabilityId);
@@ -37,7 +47,11 @@ export async function scaffoldCapabilityInWorkspace({ workspaceRoot, capabilityI
   assertPathInsideBase(capabilityDir, capabilitiesBaseDir);
   const manifestPath = path.resolve(capabilityDir, "manifest.json");
   const entryPath = path.resolve(capabilityDir, "index.js");
-  const manifestPathForRegistry = path.posix.join("capabilities", normalizedCapabilityId, "manifest.json");
+  const manifestPathForRegistry = path.posix.join(
+    "capabilities",
+    normalizedCapabilityId,
+    "manifest.json",
+  );
 
   await fs.mkdir(capabilityDir, { recursive: true });
 
@@ -53,7 +67,7 @@ export async function scaffoldCapabilityInWorkspace({ workspaceRoot, capabilityI
       minKernelVersion,
       timeoutMs: 5000,
       hooks: ["onTurnStart"],
-      permissions: []
+      permissions: [],
     };
     await fs.writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
   }
@@ -74,17 +88,17 @@ export async function scaffoldCapabilityInWorkspace({ workspaceRoot, capabilityI
     files: {
       manifest: {
         path: manifestPath,
-        created: !manifestExists
+        created: !manifestExists,
       },
       entry: {
         path: entryPath,
-        created: !entryExists
-      }
-    }
+        created: !entryExists,
+      },
+    },
   };
 }
 
-function buildCapabilityEntryTemplate(capabilityId) {
+function buildCapabilityEntryTemplate(capabilityId: unknown): string {
   const safeId = String(capabilityId ?? "").trim();
   return [
     "export function createCapability({ runtimeId, capabilityId, options }) {",
@@ -105,11 +119,11 @@ function buildCapabilityEntryTemplate(capabilityId) {
     "    }",
     "  };",
     "}",
-    ""
+    "",
   ].join("\n");
 }
 
-async function fileExists(filePath) {
+async function fileExists(filePath: string): Promise<boolean> {
   try {
     const stat = await fs.stat(filePath);
     return stat.isFile();
@@ -118,7 +132,7 @@ async function fileExists(filePath) {
   }
 }
 
-function assertPathInsideBase(targetPath, basePath) {
+function assertPathInsideBase(targetPath: unknown, basePath: unknown): void {
   const normalizedTarget = path.resolve(String(targetPath ?? ""));
   const normalizedBase = path.resolve(String(basePath ?? ""));
   const relative = path.relative(normalizedBase, normalizedTarget);

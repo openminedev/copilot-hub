@@ -41,6 +41,18 @@
     "./control-permission": {
       "types": "./dist/control-permission.d.ts",
       "import": "./dist/control-permission.js"
+    },
+    "./kernel-version": {
+      "types": "./dist/kernel-version.d.ts",
+      "import": "./dist/kernel-version.js"
+    },
+    "./capability-scaffold": {
+      "types": "./dist/capability-scaffold.d.ts",
+      "import": "./dist/capability-scaffold.js"
+    },
+    "./secret-store": {
+      "types": "./dist/secret-store.d.ts",
+      "import": "./dist/secret-store.js"
     }
   },
   "files": [

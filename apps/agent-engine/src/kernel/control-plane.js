@@ -1,7 +1,11 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { loadBotRegistry } from "../bot-registry.js";
-import { scaffoldCapabilityInWorkspace, normalizeCapabilityId, normalizeCapabilityName } from "./capability-scaffold.js";
+import {
+  scaffoldCapabilityInWorkspace,
+  normalizeCapabilityId,
+  normalizeCapabilityName,
+} from "@copilot-hub/core/capability-scaffold";
 import { CONTROL_ACTIONS, requireControlAction } from "./control-plane-actions.js";
 import { getExtensionContract } from "./extension-contract.js";
 import { assertControlPermission } from "@copilot-hub/core/control-permission";
