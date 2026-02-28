@@ -7,12 +7,12 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "build:test": "tsc -p tsconfig.test.json",
-    "prestart": "node ../../scripts/ensure-shared-build.mjs && npm run build",
+    "prestart": "npm --prefix ../.. run build:scripts --silent && node ../../scripts/dist/ensure-shared-build.mjs && npm run build",
     "start": "node dist/copilot-hub.js",
-    "predev": "node ../../scripts/ensure-shared-build.mjs && npm run build",
+    "predev": "npm --prefix ../.. run build:scripts --silent && node ../../scripts/dist/ensure-shared-build.mjs && npm run build",
     "dev": "node --watch dist/copilot-hub.js",
-    "pretest": "node ../../scripts/ensure-shared-build.mjs && npm run build && npm run build:test",
-    "test": "node ../../scripts/run-node-tests.mjs dist/test"
+    "pretest": "npm --prefix ../.. run build:scripts --silent && node ../../scripts/dist/ensure-shared-build.mjs && npm run build && npm run build:test",
+    "test": "node ../../scripts/dist/run-node-tests.mjs dist/test"
   },
   "engines": {
     "node": ">=20"

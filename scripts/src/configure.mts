@@ -7,7 +7,7 @@ import { createInterface } from "node:readline/promises";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const repoRoot = path.resolve(__dirname, "..");
+const repoRoot = path.resolve(__dirname, "..", "..");
 
 const engineEnvPath = path.join(repoRoot, "apps", "agent-engine", ".env");
 const engineExamplePath = path.join(repoRoot, "apps", "agent-engine", ".env.example");
@@ -150,7 +150,7 @@ function writeLines(filePath, lines) {
 }
 
 function parseEnvMap(lines) {
-  const map = {};
+  const map: Record<string, string> = {};
   for (const line of lines) {
     const match = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/);
     if (!match) {

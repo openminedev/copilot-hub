@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const repoRoot = path.resolve(__dirname, "..");
+const repoRoot = path.resolve(__dirname, "..", "..");
 
 const runtimeDir = path.join(repoRoot, ".copilot-hub");
 const pidsDir = path.join(runtimeDir, "pids");
@@ -214,7 +214,7 @@ async function terminateProcess(pid) {
 }
 
 function killTreeWindows(pid) {
-  return new Promise((resolve) => {
+  return new Promise<void>((resolve) => {
     const child = spawn("taskkill", ["/PID", String(pid), "/T", "/F"], {
       stdio: "ignore",
       shell: false,
@@ -328,5 +328,5 @@ function sleep(ms) {
 }
 
 function printUsage() {
-  console.log("Usage: node scripts/supervisor.mjs <up|down|restart|status|logs>");
+  console.log("Usage: node scripts/dist/supervisor.mjs <up|down|restart|status|logs>");
 }

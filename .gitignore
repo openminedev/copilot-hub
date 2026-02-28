@@ -11,4 +11,5 @@ Thumbs.db
 .copilot-hub/
 packages/*/dist/
 apps/*/dist/
+scripts/dist/
 

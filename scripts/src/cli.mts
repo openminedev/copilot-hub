@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const repoRoot = path.resolve(__dirname, "..");
+const repoRoot = path.resolve(__dirname, "..", "..");
 const nodeBin = process.execPath;
 const agentEngineEnvPath = path.join(repoRoot, "apps", "agent-engine", ".env");
 const controlPlaneEnvPath = path.join(repoRoot, "apps", "control-plane", ".env");
@@ -24,31 +24,31 @@ await main();
 async function main() {
   switch (action) {
     case "start": {
-      runNode(["scripts/configure.mjs", "--required-only"]);
-      runNode(["scripts/ensure-shared-build.mjs"]);
+      runNode(["scripts/dist/configure.mjs", "--required-only"]);
+      runNode(["scripts/dist/ensure-shared-build.mjs"]);
       await ensureCodexLogin();
-      runNode(["scripts/supervisor.mjs", "up"]);
+      runNode(["scripts/dist/supervisor.mjs", "up"]);
       return;
     }
     case "stop": {
-      runNode(["scripts/supervisor.mjs", "down"]);
+      runNode(["scripts/dist/supervisor.mjs", "down"]);
       return;
     }
     case "restart": {
-      runNode(["scripts/ensure-shared-build.mjs"]);
-      runNode(["scripts/supervisor.mjs", "restart"]);
+      runNode(["scripts/dist/ensure-shared-build.mjs"]);
+      runNode(["scripts/dist/supervisor.mjs", "restart"]);
       return;
     }
     case "status": {
-      runNode(["scripts/supervisor.mjs", "status"]);
+      runNode(["scripts/dist/supervisor.mjs", "status"]);
       return;
     }
     case "logs": {
-      runNode(["scripts/supervisor.mjs", "logs"]);
+      runNode(["scripts/dist/supervisor.mjs", "logs"]);
       return;
     }
     case "configure": {
-      runNode(["scripts/configure.mjs"]);
+      runNode(["scripts/dist/configure.mjs"]);
       return;
     }
     default: {
@@ -222,7 +222,7 @@ async function recoverCodexBinary({ resolved, status }) {
 }
 
 function runCodex(codexBin, args, stdioMode) {
-  const stdio = stdioMode === "inherit" ? "inherit" : ["ignore", "pipe", "pipe"];
+  const stdio: any = stdioMode === "inherit" ? "inherit" : ["ignore", "pipe", "pipe"];
   const result = spawnSync(codexBin, args, {
     cwd: repoRoot,
     stdio,
@@ -512,7 +512,7 @@ function normalizeErrorCode(error) {
     .toUpperCase();
 }
 
-function dedupe(values) {
+function dedupe(values: string[]) {
   return [...new Set(values.map((value) => String(value).trim()).filter(Boolean))];
 }
 
@@ -533,5 +533,5 @@ function spawnNpm(args, options) {
 }
 
 function printUsage() {
-  console.log("Usage: node scripts/cli.mjs <start|stop|restart|status|logs|configure>");
+  console.log("Usage: node scripts/dist/cli.mjs <start|stop|restart|status|logs|configure>");
 }

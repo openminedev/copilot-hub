@@ -68,4 +68,4 @@ flowchart TD
 
 - Agent workers are isolated per bot.
 - Control-plane updates write registry first, then apply runtime updates with rollback on failure.
-- Service lifecycle is managed by the local supervisor (`scripts/supervisor.mjs`).
+- Service lifecycle is managed by the local supervisor (`scripts/dist/supervisor.mjs`).
