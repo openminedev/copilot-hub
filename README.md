@@ -71,13 +71,91 @@ flowchart TD
 npm install
 ```
 
-2. Start services:
+2. Configure the required hub token:
+
+```bash
+npm run configure
+```
+
+3. Start services:
 
 ```bash
 npm run start
 ```
 
 `start` checks required tokens and prompts only if values are missing.
+
+## Telegram setup (step-by-step, no external docs needed)
+
+### 1) Create the control-plane (hub) bot token
+
+1. Open Telegram and search for `@BotFather`.
+2. Send `/start`.
+3. Send `/newbot`.
+4. Enter the bot display name you want.
+5. Enter a unique username ending with `bot` (example: `my_copilot_hub_bot`).
+6. BotFather returns a token like `123456789:AA...`.
+
+Use this token in `apps/control-plane/.env`:
+
+```env
+HUB_TELEGRAM_TOKEN_ENV=HUB_TELEGRAM_TOKEN
+HUB_TELEGRAM_TOKEN=<PASTE_TOKEN_HERE>
+```
+
+You can either edit `.env` directly or run:
+
+```bash
+npm run configure
+```
+
+### 2) Start Copilot Hub
+
+```bash
+npm run start
+```
+
+Then open your hub bot in Telegram and send `/start`.
+
+Hub commands:
+
+- `/help`
+- `/health`
+- `/bots`
+- `/create_agent`
+- `/cancel`
+
+### 3) Create runtime agent bot(s)
+
+You need one Telegram bot token per runtime agent.
+
+1. Go back to `@BotFather`.
+2. Run `/newbot` again.
+3. Create a new bot for the runtime agent.
+4. Copy the new token.
+5. In the hub chat, run `/create_agent` and follow the wizard:
+   - Step 1: send the runtime agent token
+   - Step 2: send agent id (or `default`)
+   - Step 3: reply `YES`
+
+After creation, use `/bots` in the hub chat to manage policy, reset context, or delete an agent.
+
+### 4) Optional: restrict allowed Telegram chats
+
+To find your chat id, use `/whoami` in a bot chat.
+
+Then you can set:
+
+- `HUB_ALLOWED_CHAT_IDS` in `apps/control-plane/.env`
+- `TELEGRAM_ALLOWED_CHAT_IDS` in `apps/agent-engine/.env`
+
+Use comma-separated ids when needed.
+
+### 5) Token safety
+
+- Never commit real bot tokens.
+- If a token is leaked, regenerate it in `@BotFather` using `/revoke`.
+- Keep `.env`, `data/`, and `logs/` local.
 
 ## Startup troubleshooting
 

@@ -17,6 +17,14 @@
     "./workspace-policy": {
       "types": "./dist/workspace-policy.d.ts",
       "import": "./dist/workspace-policy.js"
+    },
+    "./thread-id": {
+      "types": "./dist/thread-id.d.ts",
+      "import": "./dist/thread-id.js"
+    },
+    "./project-fingerprint": {
+      "types": "./dist/project-fingerprint.d.ts",
+      "import": "./dist/project-fingerprint.js"
     }
   },
   "files": [

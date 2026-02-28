@@ -1,4 +1,4 @@
-import { normalizeThreadId } from "./thread-id.js";
+import { normalizeThreadId } from "@copilot-hub/core/thread-id";
 
 const DEFAULT_MAX_MESSAGES = 200;
 

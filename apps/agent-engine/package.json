@@ -10,6 +10,7 @@
     "start": "node src/index.js",
     "predev": "node ../../scripts/ensure-shared-build.mjs",
     "dev": "node --watch src/index.js",
+    "pretest": "node ../../scripts/ensure-shared-build.mjs",
     "test": "node --test"
   },
   "engines": {

@@ -3,7 +3,7 @@ import { ConversationEngine } from "./bridge-service.js";
 import { createChannelAdapter } from "./channels/channel-factory.js";
 import { CapabilityManager } from "./kernel/capability-manager.js";
 import { KERNEL_VERSION } from "./kernel/kernel-version.js";
-import { createProjectFingerprint } from "./project-fingerprint.js";
+import { createProjectFingerprint } from "@copilot-hub/core/project-fingerprint";
 import { createAssistantProvider } from "./providers/provider-factory.js";
 import { JsonStateStore } from "./state-store.js";
 

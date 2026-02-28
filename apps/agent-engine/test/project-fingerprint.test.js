@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createProjectFingerprint } from "../src/project-fingerprint.js";
+import { createProjectFingerprint } from "@copilot-hub/core/project-fingerprint";
 
 test("createProjectFingerprint is stable and order-independent for channels", () => {
   const a = createProjectFingerprint({

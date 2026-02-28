@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { normalizeThreadId } from "../src/thread-id.js";
+import { normalizeThreadId } from "@copilot-hub/core/thread-id";
 
 test("normalizeThreadId trims and accepts valid thread ids", () => {
   assert.equal(normalizeThreadId("  shared-copilot-hub  "), "shared-copilot-hub");
