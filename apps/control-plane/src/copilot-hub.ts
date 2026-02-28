@@ -5,6 +5,8 @@ import { config } from "./config.js";
 import { assertWorkspaceAllowed } from "@copilot-hub/core/workspace-policy";
 import { createChannelAdapter } from "./channels/channel-factory.js";
 
+const TELEGRAM_TOKEN_PATTERN = /^\d{5,}:[A-Za-z0-9_-]{20,}$/;
+
 const tokenEnvName =
   String(process.env.HUB_TELEGRAM_TOKEN_ENV ?? "HUB_TELEGRAM_TOKEN").trim() || "HUB_TELEGRAM_TOKEN";
 const hubToken = String(process.env[tokenEnvName] ?? "").trim();
@@ -16,12 +18,19 @@ if (!hubToken) {
     ].join("\n"),
   );
 }
+if (!TELEGRAM_TOKEN_PATTERN.test(hubToken) || hubToken.toLowerCase().includes("replace_me")) {
+  throw new Error(
+    [
+      `Hub Telegram token in ${tokenEnvName} is invalid.`,
+      "Run 'copilot-hub configure' and paste a real BotFather token.",
+    ].join("\n"),
+  );
+}
 
 const hubId = String(process.env.HUB_ID ?? "copilot_hub").trim() || "copilot_hub";
 const hubName = String(process.env.HUB_NAME ?? "Copilot Hub").trim() || "Copilot Hub";
-const hubWorkspaceRootRaw = path.resolve(
-  String(process.env.HUB_WORKSPACE_ROOT ?? config.defaultWorkspaceRoot),
-);
+const configuredHubWorkspaceRoot = String(process.env.HUB_WORKSPACE_ROOT ?? "").trim();
+const hubWorkspaceRootRaw = path.resolve(configuredHubWorkspaceRoot || config.defaultWorkspaceRoot);
 const hubWorkspaceRoot = assertWorkspaceAllowed({
   workspaceRoot: hubWorkspaceRootRaw,
   policy: config.workspacePolicy,

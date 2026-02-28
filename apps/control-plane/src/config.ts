@@ -16,10 +16,12 @@ import {
 dotenv.config();
 
 const kernelRootPath = getKernelRootPath();
+const configuredDefaultWorkspaceRoot = String(process.env.DEFAULT_WORKSPACE_ROOT ?? "").trim();
 const defaultWorkspaceRoot = resolveWorkspaceRoot(
-  process.env.DEFAULT_WORKSPACE_ROOT ?? getDefaultExternalWorkspaceBasePath(kernelRootPath),
+  configuredDefaultWorkspaceRoot || getDefaultExternalWorkspaceBasePath(kernelRootPath),
 );
-const projectsBaseDir = path.resolve(process.env.PROJECTS_BASE_DIR ?? defaultWorkspaceRoot);
+const configuredProjectsBaseDir = String(process.env.PROJECTS_BASE_DIR ?? "").trim();
+const projectsBaseDir = path.resolve(configuredProjectsBaseDir || defaultWorkspaceRoot);
 const workspaceStrictMode = parseBoolean(process.env.WORKSPACE_STRICT_MODE ?? "true");
 const workspaceAllowedRoots = parseWorkspaceAllowedRoots(
   process.env.WORKSPACE_ALLOWED_ROOTS ?? "",

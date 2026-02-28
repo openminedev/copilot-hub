@@ -13,6 +13,7 @@ const engineEnvPath = path.join(repoRoot, "apps", "agent-engine", ".env");
 const engineExamplePath = path.join(repoRoot, "apps", "agent-engine", ".env.example");
 const controlPlaneEnvPath = path.join(repoRoot, "apps", "control-plane", ".env");
 const controlPlaneExamplePath = path.join(repoRoot, "apps", "control-plane", ".env.example");
+const TELEGRAM_TOKEN_PATTERN = /^\d{5,}:[A-Za-z0-9_-]{20,}$/;
 
 const args = new Set(process.argv.slice(2));
 const requiredOnly = args.has("--required-only");
@@ -57,8 +58,9 @@ async function configureRequiredTokens({ rl, controlPlaneLines }) {
   setEnvValue(controlPlaneLines, "HUB_TELEGRAM_TOKEN_ENV", controlPlaneTokenEnvName);
 
   const postControlPlaneMap = parseEnvMap(controlPlaneLines);
+  const currentToken = String(postControlPlaneMap[controlPlaneTokenEnvName] ?? "").trim();
 
-  if (String(postControlPlaneMap[controlPlaneTokenEnvName] ?? "").trim()) {
+  if (isUsableTelegramToken(currentToken)) {
     console.log("Required tokens already configured.");
     return;
   }
@@ -69,8 +71,8 @@ async function configureRequiredTokens({ rl, controlPlaneLines }) {
     );
   }
 
-  console.log("Missing required token. Please enter value:");
-  const value = await askRequired(
+  console.log("Missing or invalid hub token. Please enter a valid Telegram bot token.");
+  const value = await askRequiredTelegramToken(
     rl,
     `Token value for ${controlPlaneTokenEnvName} (control-plane)`,
   );
@@ -230,6 +232,16 @@ async function askRequired(rl, label) {
   }
 }
 
+async function askRequiredTelegramToken(rl, label) {
+  while (true) {
+    const value = await askRequired(rl, label);
+    if (isUsableTelegramToken(value)) {
+      return value;
+    }
+    console.log("Token format looks invalid. Expected format like: 123456789:AA...");
+  }
+}
+
 async function askYesNo(rl, label, defaultYes) {
   const suffix = defaultYes ? "[Y/n]" : "[y/N]";
   const answer = await rl.question(`${label} ${suffix}: `);
@@ -251,4 +263,15 @@ async function askYesNo(rl, label, defaultYes) {
 function relativeFromRepo(filePath) {
   const relative = path.relative(repoRoot, filePath);
   return relative || filePath;
+}
+
+function isUsableTelegramToken(value) {
+  const token = String(value ?? "").trim();
+  if (!token) {
+    return false;
+  }
+  if (token.toLowerCase().includes("replace_me")) {
+    return false;
+  }
+  return TELEGRAM_TOKEN_PATTERN.test(token);
 }
