@@ -9,19 +9,38 @@ import { fileURLToPath } from "node:url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const repoRoot = path.resolve(__dirname, "..", "..");
+const packageJsonPath = path.join(repoRoot, "package.json");
 const nodeBin = process.execPath;
 const agentEngineEnvPath = path.join(repoRoot, "apps", "agent-engine", ".env");
 const controlPlaneEnvPath = path.join(repoRoot, "apps", "control-plane", ".env");
 const codexNpmPackage = "@openai/codex";
 const codexInstallCommand = `npm install -g ${codexNpmPackage}`;
+const packageVersion = readPackageVersion();
 
-const action = String(process.argv[2] ?? "start")
+const rawArgs = process.argv
+  .slice(2)
+  .map((value) => String(value ?? "").trim())
+  .filter(Boolean);
+const wantsVersion = rawArgs.includes("--version") || rawArgs.includes("-v");
+const wantsHelp = rawArgs.includes("--help") || rawArgs.includes("-h");
+
+const action = String(rawArgs[0] ?? "start")
   .trim()
   .toLowerCase();
 
 await main();
 
 async function main() {
+  if (wantsVersion || action === "version") {
+    console.log(packageVersion);
+    return;
+  }
+
+  if (wantsHelp || action === "help") {
+    printUsage();
+    return;
+  }
+
   switch (action) {
     case "start": {
       runNode(["scripts/dist/configure.mjs", "--required-only"]);
@@ -533,5 +552,21 @@ function spawnNpm(args, options) {
 }
 
 function printUsage() {
-  console.log("Usage: node scripts/dist/cli.mjs <start|stop|restart|status|logs|configure>");
+  console.log(
+    "Usage: node scripts/dist/cli.mjs <start|stop|restart|status|logs|configure|version|help>",
+  );
+}
+
+function readPackageVersion() {
+  try {
+    const content = fs.readFileSync(packageJsonPath, "utf8");
+    const parsed = JSON.parse(content);
+    const version = String(parsed?.version ?? "").trim();
+    if (version) {
+      return version;
+    }
+  } catch {
+    // Ignore and use fallback.
+  }
+  return "0.0.0";
 }
