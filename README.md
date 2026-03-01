@@ -77,9 +77,10 @@ npm install -g copilot-hub@latest
 Then run:
 
 ```bash
-copilot-hub configure
 copilot-hub start
 ```
+
+`start` runs guided setup automatically if required values are missing.
 
 ## Quick start from source
 
@@ -89,19 +90,14 @@ copilot-hub start
 npm install
 ```
 
-2. Configure the required hub token:
-
-```bash
-npm run configure
-```
-
-3. Start services:
+2. Start services:
 
 ```bash
 npm run start
 ```
 
 `start` checks required tokens and prompts only if values are missing.
+If you need to prefill values manually, run `npm run configure` first.
 
 ## Telegram setup
 
@@ -117,7 +113,7 @@ npm run start
 Now run:
 
 ```bash
-npm run configure
+npm run start
 ```
 
 When prompted, paste this token.
