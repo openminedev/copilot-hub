@@ -10,6 +10,7 @@ copilot_workspaces/
 Thumbs.db
 .copilot-hub/
 packages/*/dist/
+packages/*/test-dist/
 apps/*/dist/
 scripts/dist/
 

@@ -118,13 +118,9 @@ npm run start
 
 When prompted, paste this token.
 
-### 2) Start Copilot Hub
+### 2) Open hub bot on Telegram
 
-```bash
-npm run start
-```
-
-Then open your hub bot in Telegram and send `/start`.
+Open your hub bot in Telegram and send `/start`.
 
 Hub commands:
 
@@ -147,8 +143,8 @@ You need one Telegram bot token per runtime agent.
    - Step 2: send agent id (or `default`)
    - Step 3: reply `YES`
 
-After creation, use `/bots` in the hub chat to manage policy, reset context, or delete an agent.
-A streamlined default profile is applied, and actions start from that agent workspace folder.
+You can use `/bots` in the hub chat to manage policy, reset context, or delete an agent.
+Default values are already applied, and actions start from that agent workspace folder.
 
 ### 4) Token safety
 
