@@ -44,7 +44,7 @@ Why this matters:
 
 ## Control-plane role
 
-- `control chat` is a simple maintenance chat: fix issues and add new capabilities.
+- `control chat` is a simple maintenance chat: fix issues, add new capabilities, and create new agents.
 - `runtime chats` are user-facing chats: execute tasks and deliver results.
 - users stay in runtime chats for normal work and use control chat only when an agent needs a fix or upgrade.
 

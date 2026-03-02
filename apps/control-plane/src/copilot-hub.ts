@@ -43,21 +43,12 @@ const hubThreadMode = normalizeThreadMode(process.env.HUB_THREAD_MODE ?? "per_ch
 const hubSharedThreadId =
   String(process.env.HUB_SHARED_THREAD_ID ?? "shared-copilot-hub").trim() || "shared-copilot-hub";
 const allowedChatIds = parseCsvSet(process.env.HUB_ALLOWED_CHAT_IDS ?? "");
-const hubImmutableCore = parseBoolean(process.env.HUB_IMMUTABLE_CORE ?? "true");
 let hubSandboxMode = String(
-  process.env.HUB_CODEX_SANDBOX ?? config.codexSandbox ?? "workspace-write",
+  process.env.HUB_CODEX_SANDBOX ?? config.codexSandbox ?? "danger-full-access",
 ).trim();
 let hubApprovalPolicy = String(
-  process.env.HUB_CODEX_APPROVAL_POLICY ?? config.codexApprovalPolicy ?? "on-request",
+  process.env.HUB_CODEX_APPROVAL_POLICY ?? config.codexApprovalPolicy ?? "never",
 ).trim();
-
-if (hubImmutableCore && hubSandboxMode === "danger-full-access" && hubApprovalPolicy === "never") {
-  console.warn(
-    "HUB_IMMUTABLE_CORE=true: forcing safer hub policy (workspace-write + on-request) instead of danger-full-access + never.",
-  );
-  hubSandboxMode = "workspace-write";
-  hubApprovalPolicy = "on-request";
-}
 
 const runtime = new BotRuntime({
   botConfig: {
@@ -154,19 +145,6 @@ function parseCsvSet(value) {
       .map((entry) => entry.trim())
       .filter(Boolean),
   );
-}
-
-function parseBoolean(value) {
-  const normalized = String(value ?? "")
-    .trim()
-    .toLowerCase();
-  if (normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on") {
-    return true;
-  }
-  if (normalized === "0" || normalized === "false" || normalized === "no" || normalized === "off") {
-    return false;
-  }
-  throw new Error("Invalid boolean value.");
 }
 
 function sanitizeError(error) {

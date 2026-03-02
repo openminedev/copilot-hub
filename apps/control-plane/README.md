@@ -26,7 +26,6 @@ Recommended env:
 ## Workspace and policy guards
 
 - `HUB_WORKSPACE_ROOT` is validated against shared workspace policy.
-- `HUB_IMMUTABLE_CORE=true` prevents unsafe hub runtime policy combinations.
 - `WORKSPACE_STRICT_MODE` and `WORKSPACE_ALLOWED_ROOTS` follow the same boundary model as `agent-engine`.
 
 ## Responsibility boundary
