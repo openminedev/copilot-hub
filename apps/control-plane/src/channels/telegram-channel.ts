@@ -413,7 +413,11 @@ export class TelegramChannel {
         return;
       }
       controlStatus = "Generation failed.";
-      await this.bot.api.sendMessage(chatId, `Execution error:\n${safe}`);
+      const failureMessage = await buildTurnFailureMessage({
+        runtime: this.runtime,
+        safeError: safe,
+      });
+      await this.bot.api.sendMessage(chatId, failureMessage);
     } finally {
       this.#clearActiveTurn(chatId, turnToken);
       await this.#closeTurnControls(chatId, turnToken, controlStatus);
@@ -850,6 +854,37 @@ function isTurnInterruptedError(message) {
     normalized.includes("turn was interrupted") ||
     normalized.includes("turn interrupted by user") ||
     normalized.includes("process stopped while waiting for turn completion")
+  );
+}
+
+async function buildTurnFailureMessage({ runtime, safeError }) {
+  if (isQuotaLimitError(safeError)) {
+    const quotaLine = await resolveCodexQuotaLine(runtime);
+    const base = "Execution paused: Codex quota limit reached for this account.";
+    if (quotaLine) {
+      return `${base}\n${quotaLine}`;
+    }
+    return `${base}\nPlease retry after the quota reset window.`;
+  }
+  return `Execution error:\n${safeError}`;
+}
+
+function isQuotaLimitError(message) {
+  const normalized = String(message ?? "")
+    .trim()
+    .toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  return (
+    normalized.includes("quota") ||
+    normalized.includes("rate limit") ||
+    normalized.includes("too many requests") ||
+    normalized.includes("usage limit") ||
+    normalized.includes("limit reached") ||
+    normalized.includes("insufficient quota") ||
+    normalized.includes("credit balance") ||
+    normalized.includes("429")
   );
 }
 

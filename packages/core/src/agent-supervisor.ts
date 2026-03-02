@@ -3,6 +3,11 @@ import { fork } from "node:child_process";
 
 const REQUEST_TIMEOUT_MS = 15000;
 const HEARTBEAT_TIMEOUT_MS = 4000;
+const WORKER_READY_TIMEOUT_MS = 30000;
+const WORKER_READY_REQUEST_TIMEOUT_MS = 3000;
+const WORKER_READY_POLL_INTERVAL_MS = 150;
+const WORKER_RECOVERY_TIMEOUT_MS = 20000;
+const WORKER_RECOVERY_POLL_INTERVAL_MS = 250;
 
 export class AgentSupervisor {
   constructor({
@@ -175,6 +180,14 @@ export class AgentSupervisor {
       this.#updateStatus(status);
       return this.getStatus();
     } catch (error) {
+      if (isWorkerReadyTimeoutError(error)) {
+        const recoveredStatus = await waitForWorkerRecovery(this).catch(() => null);
+        if (recoveredStatus) {
+          this.#updateStatus(recoveredStatus);
+          return this.getStatus();
+        }
+      }
+
       this.botConfig = previousConfig;
       try {
         await this.forceRestart("provider policy rollback");
@@ -538,17 +551,17 @@ export class AgentSupervisor {
 
 async function waitForWorkerReady(supervisor, child) {
   const start = Date.now();
-  const timeoutMs = 10000;
+  const timeoutMs = WORKER_READY_TIMEOUT_MS;
 
   while (Date.now() - start < timeoutMs) {
     if (!child.connected) {
       break;
     }
     try {
-      await supervisor.request("getStatus", null, 2000);
+      await supervisor.request("getStatus", null, WORKER_READY_REQUEST_TIMEOUT_MS);
       return;
     } catch {
-      await delay(100);
+      await delay(WORKER_READY_POLL_INTERVAL_MS);
     }
   }
 
@@ -620,6 +633,36 @@ function waitForChildExit(child, timeoutMs) {
 
     child.once("exit", onExit);
   });
+}
+
+async function waitForWorkerRecovery(supervisor) {
+  const start = Date.now();
+  while (Date.now() - start < WORKER_RECOVERY_TIMEOUT_MS) {
+    try {
+      const status = await supervisor.refreshStatus(WORKER_READY_REQUEST_TIMEOUT_MS);
+      if (status && typeof status === "object") {
+        return status;
+      }
+    } catch {
+      await delay(WORKER_RECOVERY_POLL_INTERVAL_MS);
+      continue;
+    }
+
+    await delay(WORKER_RECOVERY_POLL_INTERVAL_MS);
+  }
+
+  throw new Error(
+    `Worker '${supervisor.id}' did not recover within ${WORKER_RECOVERY_TIMEOUT_MS}ms after restart timeout.`,
+  );
+}
+
+function isWorkerReadyTimeoutError(error) {
+  const message = sanitizeError(error).toLowerCase();
+  return (
+    message.includes("did not become ready within") ||
+    message.includes("worker restart failed") ||
+    message.includes("worker request 'getstatus' timed out")
+  );
 }
 
 function sanitizeError(error) {
