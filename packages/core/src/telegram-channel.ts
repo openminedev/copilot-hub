@@ -743,7 +743,11 @@ export class TelegramChannel {
     const key = String(chatId);
     await this.#closeTurnControls(chatId, null, null);
     try {
-      const sent = await this.bot.api.sendMessage(chatId, "Generation in progress.", {
+      const quotaLine = await resolveCodexQuotaLine(this.runtime);
+      const inProgressText = quotaLine
+        ? ["Generation in progress.", quotaLine].join("\n")
+        : "Generation in progress.";
+      const sent = await this.bot.api.sendMessage(chatId, inProgressText, {
         reply_markup: buildTurnControlKeyboard(token),
       });
       this.turnControlByChat.set(key, {
@@ -751,8 +755,47 @@ export class TelegramChannel {
         threadId: String(threadId),
         messageId: Number(sent?.message_id ?? 0),
       });
+      this.#scheduleTurnControlQuotaRefresh(chatId, token, 1);
     } catch {
       // Non critical UI helper only.
+    }
+  }
+
+  #scheduleTurnControlQuotaRefresh(chatId, token, attempt) {
+    const safeAttempt = Number.isFinite(attempt) ? Number(attempt) : 1;
+    if (safeAttempt > 4) {
+      return;
+    }
+
+    setTimeout(() => {
+      void this.#refreshTurnControlQuota(chatId, token, safeAttempt);
+    }, 1200);
+  }
+
+  async #refreshTurnControlQuota(chatId, token, attempt) {
+    if (!this.bot) {
+      return;
+    }
+
+    const key = String(chatId);
+    const current = this.turnControlByChat.get(key);
+    if (!current || String(current.token) !== String(token)) {
+      return;
+    }
+
+    const quotaLine = await resolveCodexQuotaLine(this.runtime);
+    if (!quotaLine) {
+      this.#scheduleTurnControlQuotaRefresh(chatId, token, Number(attempt) + 1);
+      return;
+    }
+
+    const inProgressText = ["Generation in progress.", quotaLine].join("\n");
+    try {
+      await this.bot.api.editMessageText(chatId, current.messageId, inProgressText, {
+        reply_markup: buildTurnControlKeyboard(token),
+      });
+    } catch {
+      // Message may be outdated/deleted or unchanged; ignore.
     }
   }
 
@@ -1113,4 +1156,66 @@ function parseTurnControlCallbackData(raw) {
     action: match[1],
     token: match[2],
   };
+}
+
+async function resolveCodexQuotaLine(runtime) {
+  if (!runtime || typeof runtime.getProviderUsage !== "function") {
+    return "";
+  }
+
+  try {
+    const snapshot = await runtime.getProviderUsage();
+    return formatCodexQuotaLine(snapshot);
+  } catch {
+    return "";
+  }
+}
+
+function formatCodexQuotaLine(snapshot) {
+  const windows = [
+    formatQuotaWindow("5h", snapshot?.primary),
+    formatQuotaWindow("weekly", snapshot?.secondary),
+  ].filter(Boolean);
+  if (windows.length === 0) {
+    return "";
+  }
+  return `Codex quota: ${windows.join(" | ")}`;
+}
+
+function formatQuotaWindow(label, windowSnapshot) {
+  const remaining = Number(windowSnapshot?.remainingPercent);
+  if (!Number.isFinite(remaining)) {
+    return "";
+  }
+
+  const resetAt = Number(windowSnapshot?.resetsAt);
+  const resetLabel = Number.isFinite(resetAt) ? `, reset ${formatEpochSeconds(resetAt)}` : "";
+  return `${label} ${Math.round(clampPercent(remaining))}%${resetLabel}`;
+}
+
+function formatEpochSeconds(value) {
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    return "";
+  }
+
+  const date = new Date(seconds * 1000);
+  if (!Number.isFinite(date.getTime())) {
+    return "";
+  }
+  return date.toISOString().replace(".000Z", "Z");
+}
+
+function clampPercent(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) {
+    return 0;
+  }
+  if (n < 0) {
+    return 0;
+  }
+  if (n > 100) {
+    return 100;
+  }
+  return n;
 }

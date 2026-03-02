@@ -33,6 +33,7 @@ export class CodexAppClient extends EventEmitter {
     this.turnOutput = new Map();
     this.completedTurns = new Map();
     this.activeTurnByThread = new Map();
+    this.latestQuotaSnapshot = null;
   }
 
   setCwd(value) {
@@ -106,6 +107,13 @@ export class CodexAppClient extends EventEmitter {
     );
     values.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
     return values.map((entry) => ({ ...entry }));
+  }
+
+  getLatestQuotaSnapshot() {
+    if (!this.latestQuotaSnapshot || typeof this.latestQuotaSnapshot !== "object") {
+      return null;
+    }
+    return JSON.parse(JSON.stringify(this.latestQuotaSnapshot));
   }
 
   async resolveApproval({ approvalId, decision }) {
@@ -570,6 +578,8 @@ export class CodexAppClient extends EventEmitter {
       return;
     }
 
+    this.#captureQuotaSnapshot(message);
+
     if (
       message &&
       typeof message === "object" &&
@@ -594,6 +604,15 @@ export class CodexAppClient extends EventEmitter {
     if (message && typeof message === "object" && typeof message.method === "string") {
       this.#handleNotification(message);
     }
+  }
+
+  #captureQuotaSnapshot(message) {
+    const snapshot = extractQuotaSnapshot(message);
+    if (!snapshot) {
+      return;
+    }
+    this.latestQuotaSnapshot = snapshot;
+    this.emit("quota", snapshot);
   }
 
   #handleResponse(message) {
@@ -876,6 +895,193 @@ function normalizeTurnInputItems({ prompt, inputItems }) {
     throw new Error("Prompt cannot be empty.");
   }
   return items;
+}
+
+function extractQuotaSnapshot(message) {
+  const tokenCountPayload = extractTokenCountPayload(message);
+  const rateLimits = tokenCountPayload?.rate_limits ?? extractRateLimitsPayload(message);
+  if (!rateLimits || typeof rateLimits !== "object") {
+    return null;
+  }
+
+  const primaryUsedPercent = readUsedPercent(rateLimits?.primary);
+  const secondaryUsedPercent = readUsedPercent(rateLimits?.secondary);
+  if (!Number.isFinite(primaryUsedPercent) && !Number.isFinite(secondaryUsedPercent)) {
+    return null;
+  }
+
+  const nowIso = new Date().toISOString();
+  return {
+    updatedAt: nowIso,
+    primary: normalizeRateLimitWindow(rateLimits?.primary),
+    secondary: normalizeRateLimitWindow(rateLimits?.secondary),
+    credits: normalizeCredits(rateLimits?.credits),
+    usage: normalizeTokenUsage(tokenCountPayload?.info),
+    rawType: String(tokenCountPayload?.type ?? "rate_limits"),
+  };
+}
+
+function extractTokenCountPayload(message) {
+  if (!message || typeof message !== "object") {
+    return null;
+  }
+
+  if (message.type === "event_msg" && message.payload?.type === "token_count") {
+    return message.payload;
+  }
+
+  if (message.type === "token_count") {
+    return message;
+  }
+
+  if (message.payload?.type === "token_count") {
+    return message.payload;
+  }
+
+  if (message.method === "event_msg") {
+    if (message.params?.payload?.type === "token_count") {
+      return message.params.payload;
+    }
+    if (message.params?.type === "token_count") {
+      return message.params;
+    }
+  }
+
+  if (message.method === "codex/event/token_count") {
+    if (message.params?.msg?.type === "token_count") {
+      return message.params.msg;
+    }
+    if (message.params?.type === "token_count") {
+      return message.params;
+    }
+  }
+
+  if (message.method === "token_count") {
+    if (message.params && typeof message.params === "object") {
+      return {
+        type: "token_count",
+        ...message.params,
+      };
+    }
+  }
+
+  if (message.params?.msg?.type === "token_count") {
+    return message.params.msg;
+  }
+
+  return null;
+}
+
+function extractRateLimitsPayload(message) {
+  if (!message || typeof message !== "object") {
+    return null;
+  }
+
+  if (message.method === "account/rateLimits/updated") {
+    const candidate = message.params?.rateLimits;
+    if (candidate && typeof candidate === "object") {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+function normalizeRateLimitWindow(value) {
+  const input = value && typeof value === "object" ? value : {};
+  const usedPercent = readUsedPercent(input);
+  const normalizedUsedPercent = Number.isFinite(usedPercent) ? clampPercent(usedPercent) : null;
+
+  return {
+    usedPercent: normalizedUsedPercent,
+    remainingPercent:
+      normalizedUsedPercent === null ? null : clampPercent(100 - normalizedUsedPercent),
+    windowMinutes: readWindowMinutes(input),
+    resetsAt: readResetsAt(input),
+  };
+}
+
+function normalizeCredits(value) {
+  const input = value && typeof value === "object" ? value : {};
+  return {
+    hasCredits: toNullableBoolean(input.has_credits ?? input.hasCredits),
+    unlimited: toNullableBoolean(input.unlimited),
+    balance: toFiniteNumber(input.balance),
+  };
+}
+
+function normalizeTokenUsage(info) {
+  const usage = extractUsageBlock(info);
+  if (!usage) {
+    return null;
+  }
+  return {
+    inputTokens: toFiniteNumber(usage.input_tokens ?? usage.inputTokens),
+    cachedInputTokens: toFiniteNumber(usage.cached_input_tokens ?? usage.cachedInputTokens),
+    outputTokens: toFiniteNumber(usage.output_tokens ?? usage.outputTokens),
+    reasoningOutputTokens: toFiniteNumber(
+      usage.reasoning_output_tokens ?? usage.reasoningOutputTokens,
+    ),
+    totalTokens: toFiniteNumber(usage.total_tokens ?? usage.totalTokens),
+    modelContextWindow: toFiniteNumber(info?.model_context_window ?? info?.modelContextWindow),
+  };
+}
+
+function extractUsageBlock(info) {
+  if (!info || typeof info !== "object") {
+    return null;
+  }
+
+  const candidate = info.total_token_usage ?? info.totalTokenUsage ?? info.total;
+  if (!candidate || typeof candidate !== "object") {
+    return null;
+  }
+
+  return candidate;
+}
+
+function readUsedPercent(value) {
+  const input = value && typeof value === "object" ? value : {};
+  return toFiniteNumber(input.used_percent ?? input.usedPercent);
+}
+
+function readWindowMinutes(value) {
+  const input = value && typeof value === "object" ? value : {};
+  return toFiniteNumber(input.window_minutes ?? input.windowDurationMins);
+}
+
+function readResetsAt(value) {
+  const input = value && typeof value === "object" ? value : {};
+  return toFiniteNumber(input.resets_at ?? input.resetsAt);
+}
+
+function toFiniteNumber(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function toNullableBoolean(value) {
+  if (value === true) {
+    return true;
+  }
+  if (value === false) {
+    return false;
+  }
+  return null;
+}
+
+function clampPercent(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) {
+    return null;
+  }
+  if (n < 0) {
+    return 0;
+  }
+  if (n > 100) {
+    return 100;
+  }
+  return n;
 }
 
 function sanitizeError(error) {

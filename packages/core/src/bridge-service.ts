@@ -234,6 +234,13 @@ export class ConversationEngine {
     await this.assistantProvider.shutdown();
   }
 
+  getProviderUsage() {
+    if (typeof this.assistantProvider?.getLatestQuotaSnapshot !== "function") {
+      return null;
+    }
+    return this.assistantProvider.getLatestQuotaSnapshot();
+  }
+
   #queue(threadId, work) {
     const previous = this.queueByThread.get(threadId) ?? Promise.resolve();
     const next = previous.then(work, work);

@@ -223,6 +223,14 @@ export class BotRuntime {
     return this.engine.interruptThread(threadId);
   }
 
+  async getProviderUsage() {
+    await this.ensureInitialized();
+    if (!this.engine || typeof this.engine.getProviderUsage !== "function") {
+      return null;
+    }
+    return this.engine.getProviderUsage();
+  }
+
   async resolveThreadIdForChannel({ channelKind, channelId, externalUserId }) {
     await this.ensureInitialized();
     if (this.config.threadMode === "single") {
@@ -370,6 +378,7 @@ export class BotRuntime {
       interruptThread: (threadId) => this.interruptThread(threadId),
       listPendingApprovals: (threadId) => this.listPendingApprovals(threadId),
       resolvePendingApproval: (payload) => this.resolvePendingApproval(payload),
+      getProviderUsage: () => this.getProviderUsage(),
       sendTurn: (payload) => this.sendTurn(payload),
     };
   }

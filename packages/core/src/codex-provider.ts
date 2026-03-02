@@ -36,6 +36,9 @@ export class CodexProvider extends EventEmitter {
     this.client.on("stderr", (stderr) => {
       this.emit("stderr", stderr);
     });
+    this.client.on("quota", (snapshot) => {
+      this.emit("quota", snapshot);
+    });
   }
 
   setWorkspaceRoot(workspaceRoot) {
@@ -79,5 +82,12 @@ export class CodexProvider extends EventEmitter {
 
   async shutdown() {
     await this.client.shutdown();
+  }
+
+  getLatestQuotaSnapshot() {
+    if (typeof this.client?.getLatestQuotaSnapshot !== "function") {
+      return null;
+    }
+    return this.client.getLatestQuotaSnapshot();
   }
 }
