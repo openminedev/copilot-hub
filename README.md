@@ -22,7 +22,7 @@ Shared packages:
 
 The same Telegram chat handles both operations and development:
 
-- commands: `/help`, `/health`, `/bots`, `/create_agent`, `/cancel`
+- commands: `/help`, `/health`, `/bots`, `/create_agent`, `/codex_status`, `/codex_login`, `/cancel`
 - normal message: handled by the LLM assistant
 
 ## Workspace isolation
@@ -129,6 +129,8 @@ Hub commands:
 - `/health`
 - `/bots`
 - `/create_agent`
+- `/codex_status`
+- `/codex_login`
 - `/cancel`
 
 ### 3) Create runtime agent bot(s)
@@ -147,7 +149,14 @@ You need one Telegram bot token per runtime agent.
 You can use `/bots` in the hub chat to manage policy, reset context, or delete an agent.
 Default values are already applied, and actions start from that agent workspace folder.
 
-### 4) Token safety
+### 4) Switch Codex account from Telegram (optional)
+
+- Run `/codex_status` to verify current Codex login state.
+- Run `/codex_login` (or `/codex_switch`) to get a device code link, then complete sign-in from your phone.
+- Optional: run `/codex_switch_key` if you want API-key based switch (`sk-...`).
+- Running agents are restarted automatically after successful switch.
+
+### 5) Token safety
 
 - Never commit real bot tokens.
 - If a token is leaked, regenerate it in `@BotFather` using `/revoke`.
@@ -170,10 +179,17 @@ npm run restart
 npm run status
 npm run logs
 npm run configure
+npm run update
 npm run test
 npm run lint
 npm run format:check
 npm run check:apps
+```
+
+Global update command:
+
+```bash
+copilot-hub update
 ```
 
 Service mode (optional, OS-native):

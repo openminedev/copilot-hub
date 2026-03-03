@@ -10,6 +10,7 @@ const TELEGRAM_TOKEN_PATTERN = /^\d{5,}:[A-Za-z0-9_-]{20,}$/;
 
 const menuSessions = new Map();
 const createFlows = new Map();
+const codexSwitchFlows = new Map();
 
 const POLICY_PROFILES = {
   safe: {
@@ -86,6 +87,81 @@ export async function maybeHandleHubOpsCommand({ ctx, runtime, channelId }) {
     return true;
   }
 
+  if (command === "/codex_status") {
+    try {
+      const status = await apiGet("/api/system/codex/status");
+      const deviceAuth = status?.deviceAuth ?? {};
+      const deviceStatus = String(deviceAuth?.status ?? "idle");
+      await ctx.reply(
+        [
+          "Codex account:",
+          `configured: ${status?.configured ? "yes" : "no"}`,
+          `binary: ${String(status?.codexBin ?? "-")}`,
+          status?.detail ? `detail: ${String(status.detail)}` : "",
+          `deviceAuth: ${deviceStatus}`,
+          deviceAuth?.code ? `code: ${String(deviceAuth.code)}` : "",
+          deviceAuth?.loginUrl ? `link: ${String(deviceAuth.loginUrl)}` : "",
+          deviceAuth?.detail ? `deviceDetail: ${String(deviceAuth.detail)}` : "",
+        ]
+          .filter(Boolean)
+          .join("\n"),
+      );
+    } catch (error) {
+      await ctx.reply(`Codex status failed: ${sanitizeError(error)}`);
+    }
+    return true;
+  }
+
+  if (command === "/codex_login" || command === "/codex_switch") {
+    try {
+      const response = await apiPost("/api/system/codex/device_auth/start", {});
+      const statusLabel = String(response?.status ?? "pending");
+      const loginUrl = String(response?.loginUrl ?? "").trim();
+      const code = String(response?.code ?? "").trim();
+      if (!loginUrl || !code) {
+        await ctx.reply(
+          "Codex login flow started, but code details were not ready yet. Retry /codex_login.",
+        );
+        return true;
+      }
+
+      await ctx.reply(
+        [
+          `Codex login flow: ${statusLabel}`,
+          `1) Open: ${loginUrl}`,
+          `2) Enter code: ${code}`,
+          "3) Finish sign-in on your phone, then run /codex_status",
+          "Use /cancel to abort this login flow.",
+        ].join("\n"),
+      );
+    } catch (error) {
+      await ctx.reply(`Codex login start failed: ${sanitizeError(error)}`);
+    }
+    return true;
+  }
+
+  if (command === "/codex_switch_key") {
+    if (createFlows.has(flowKey) || codexSwitchFlows.has(flowKey)) {
+      await ctx.reply("Another operation is active. Send /cancel first.");
+      return true;
+    }
+
+    codexSwitchFlows.set(flowKey, {
+      createdAt: Date.now(),
+      step: "api_key",
+    });
+
+    await ctx.reply(
+      [
+        "Codex account switch started.",
+        "Send your Codex API key now (example: sk-...).",
+        "Running agents will restart automatically after successful switch.",
+        "Use /cancel to stop.",
+      ].join("\n"),
+    );
+    return true;
+  }
+
   if (command === "/create_agent") {
     const existing = createFlows.get(flowKey);
     if (existing) {
@@ -113,8 +189,20 @@ export async function maybeHandleHubOpsCommand({ ctx, runtime, channelId }) {
   }
 
   if (command === "/cancel") {
-    const deleted = createFlows.delete(flowKey);
-    await ctx.reply(deleted ? "Current operation canceled." : "No active operation.");
+    const createDeleted = createFlows.delete(flowKey);
+    const switchDeleted = codexSwitchFlows.delete(flowKey);
+    let remoteCanceled = false;
+    try {
+      const canceled = await apiPost("/api/system/codex/device_auth/cancel", {});
+      remoteCanceled = canceled?.canceled === true;
+    } catch {
+      remoteCanceled = false;
+    }
+    await ctx.reply(
+      createDeleted || switchDeleted || remoteCanceled
+        ? "Current operation canceled."
+        : "No active operation.",
+    );
     return true;
   }
 
@@ -131,6 +219,14 @@ export async function maybeHandleHubOpsFollowUp({ ctx, runtime, channelId }) {
 
   const chatId = getChatId(ctx);
   const flowKey = buildFlowKey(runtime?.runtimeId, channelId, chatId);
+  const codexFlow = codexSwitchFlows.get(flowKey);
+  if (codexFlow) {
+    const handled = await handleCodexSwitchFlow({ ctx, flowKey, flow: codexFlow, text });
+    if (handled) {
+      return true;
+    }
+  }
+
   const flow = createFlows.get(flowKey);
   if (!flow) {
     return false;
@@ -233,6 +329,55 @@ export async function maybeHandleHubOpsFollowUp({ ctx, runtime, channelId }) {
   createFlows.delete(flowKey);
   await ctx.reply("Flow reset. Use /create_agent to start again.");
   return true;
+}
+
+async function handleCodexSwitchFlow({ ctx, flowKey, flow, text }) {
+  if (flow.step !== "api_key") {
+    codexSwitchFlows.delete(flowKey);
+    await ctx.reply("Flow reset. Use /codex_switch_key to start again.");
+    return true;
+  }
+
+  const apiKey = String(text ?? "").trim();
+  if (!looksLikeCodexApiKey(apiKey)) {
+    await ctx.reply("Invalid API key format. Send a key starting with 'sk-' or /cancel.");
+    return true;
+  }
+
+  await maybeDeleteIncomingMessage(ctx);
+
+  try {
+    const result = await apiPost("/api/system/codex/switch_api_key", {
+      apiKey,
+    });
+    codexSwitchFlows.delete(flowKey);
+
+    const restartedBots = Array.isArray(result?.restartedBots) ? result.restartedBots : [];
+    const restartFailures = Array.isArray(result?.restartFailures) ? result.restartFailures : [];
+
+    const lines = ["Codex account switched successfully."];
+    if (result?.detail) {
+      lines.push(`status: ${String(result.detail)}`);
+    }
+
+    if (restartedBots.length > 0) {
+      lines.push(`Agents restarted: ${restartedBots.join(", ")}`);
+    } else {
+      lines.push("No running agents needed restart.");
+    }
+
+    if (restartFailures.length > 0) {
+      lines.push(
+        `Restart warnings: ${restartFailures.length}. Use /health then /bots to verify state.`,
+      );
+    }
+
+    await ctx.reply(lines.join("\n"));
+    return true;
+  } catch (error) {
+    await ctx.reply(`Codex switch failed:\n${sanitizeError(error)}\nRetry or /cancel.`);
+    return true;
+  }
 }
 
 export async function maybeHandleHubOpsCallback({ ctx }) {
@@ -375,7 +520,14 @@ function buildHelpText(runtimeName) {
     "/health",
     "/bots",
     "/create_agent",
+    "/codex_status",
+    "/codex_login",
+    "/codex_switch_key",
     "/cancel",
+    "",
+    "Codex account:",
+    "/codex_login: switch account with device code flow",
+    "/codex_switch_key: switch account with API key",
     "",
     "Policy guide in /bots:",
     "Safe: read-only + approval prompts",
@@ -406,6 +558,13 @@ function cleanupState() {
     const createdAt = Number(flow?.createdAt ?? 0);
     if (!Number.isFinite(createdAt) || now - createdAt > FLOW_TTL_MS) {
       createFlows.delete(key);
+    }
+  }
+
+  for (const [key, flow] of codexSwitchFlows.entries()) {
+    const createdAt = Number(flow?.createdAt ?? 0);
+    if (!Number.isFinite(createdAt) || now - createdAt > FLOW_TTL_MS) {
+      codexSwitchFlows.delete(key);
     }
   }
 }
@@ -797,6 +956,31 @@ async function editMessageOrReply(ctx, text, options = {}) {
 
 function getChatId(ctx) {
   return String(ctx.chat?.id ?? ctx.callbackQuery?.message?.chat?.id ?? "").trim();
+}
+
+function looksLikeCodexApiKey(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw.startsWith("sk-")) {
+    return false;
+  }
+  if (raw.length < 20 || raw.length > 4096) {
+    return false;
+  }
+  return /^[A-Za-z0-9._-]+$/.test(raw);
+}
+
+async function maybeDeleteIncomingMessage(ctx) {
+  const chatId = ctx.chat?.id;
+  const messageId = ctx.message?.message_id;
+  if (!chatId || !messageId) {
+    return;
+  }
+
+  try {
+    await ctx.api.deleteMessage(chatId, messageId);
+  } catch {
+    // Best effort only.
+  }
 }
 
 async function answerCallbackQuerySafe(ctx, text = "") {

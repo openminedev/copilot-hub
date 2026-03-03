@@ -3,7 +3,8 @@
 `control-plane` is the single Telegram hub for Copilot Hub.
 
 It handles:
-- simple operations commands (`/help`, `/health`, `/bots`, `/create_agent`, `/cancel`)
+
+- simple operations commands (`/help`, `/health`, `/bots`, `/create_agent`, `/codex_status`, `/codex_login`, `/cancel`)
 - LLM development requests through normal chat messages
 
 ## Setup
@@ -18,9 +19,11 @@ npm run start
 ```
 
 Required env:
+
 - `HUB_TELEGRAM_TOKEN` (or custom `HUB_TELEGRAM_TOKEN_ENV`)
 
 Recommended env:
+
 - `HUB_ENGINE_BASE_URL` (default: `http://127.0.0.1:8787`)
 
 ## Workspace and policy guards

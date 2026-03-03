@@ -1,5 +1,7 @@
 // @ts-nocheck
 import path from "node:path";
+import { randomBytes } from "node:crypto";
+import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { BotManager } from "@copilot-hub/core/bot-manager";
@@ -19,7 +21,9 @@ let botManager = null;
 let instanceLock = null;
 let controlPlane = null;
 let secretStore = null;
+let codexDeviceAuthSession = null;
 const workerScriptPath = fileURLToPath(new URL("./agent-worker.js", import.meta.url));
+const ANSI_ESCAPE_PATTERN = new RegExp(String.raw`\u001b\[[0-9;]*m`, "g");
 
 await bootstrap();
 
@@ -143,6 +147,100 @@ function buildApiApp({ botManager, controlPlane, registryFilePath }) {
       secretStoreFile: config.secretStoreFilePath,
     });
   });
+
+  app.get(
+    "/api/system/codex/status",
+    wrapAsync(async (req, res) => {
+      const status = readCodexLoginStatus();
+      const deviceAuth = getCodexDeviceAuthSnapshot();
+      res.json({
+        ok: true,
+        configured: status.configured,
+        codexBin: status.codexBin,
+        detail: status.detail,
+        deviceAuth,
+      });
+    }),
+  );
+
+  app.post(
+    "/api/system/codex/device_auth/start",
+    wrapAsync(async (req, res) => {
+      const session = startCodexDeviceAuthSession();
+      const ready = await waitForDeviceCode(session, 12_000);
+      if (!ready) {
+        res.status(400).json({
+          error:
+            session.error ||
+            "Could not initialize Codex device login flow. Retry '/codex_login' in a few seconds.",
+        });
+        return;
+      }
+
+      res.json({
+        ok: true,
+        status: session.status,
+        loginUrl: session.loginUrl,
+        code: session.code,
+      });
+    }),
+  );
+
+  app.post(
+    "/api/system/codex/device_auth/cancel",
+    wrapAsync(async (req, res) => {
+      const canceled = cancelCodexDeviceAuthSession();
+      res.json({
+        ok: true,
+        canceled,
+      });
+    }),
+  );
+
+  app.post(
+    "/api/system/codex/switch_api_key",
+    wrapAsync(async (req, res) => {
+      cancelCodexDeviceAuthSession();
+      const apiKey = String(req.body?.apiKey ?? "").trim();
+      if (!looksLikeCodexApiKey(apiKey)) {
+        res.status(400).json({ error: "Field 'apiKey' is invalid." });
+        return;
+      }
+
+      const login = runCodexCommand(["login", "--with-api-key"], {
+        inputText: `${apiKey}\n`,
+      });
+      if (!login.ok) {
+        const message = redactSecret(
+          firstNonEmptyLine(login.errorMessage, login.stderr, login.stdout) ||
+            "Codex login failed. Check API key and retry.",
+          apiKey,
+        );
+        res.status(400).json({ error: message });
+        return;
+      }
+
+      const status = readCodexLoginStatus();
+      if (!status.configured) {
+        res.status(400).json({
+          error:
+            status.detail || "Codex login verification failed after credential update. Retry once.",
+        });
+        return;
+      }
+
+      const restarted = await restartRunningBots();
+      res.json({
+        ok: true,
+        switched: true,
+        configured: true,
+        codexBin: status.codexBin,
+        detail: status.detail,
+        restartedBots: restarted.restartedBotIds,
+        restartFailures: restarted.failures,
+      });
+    }),
+  );
 
   app.get(
     "/api/extensions/contract",
@@ -445,4 +543,328 @@ function parseDeleteModeFromRequest(body) {
     return value;
   }
   return "soft";
+}
+
+function startCodexDeviceAuthSession() {
+  if (codexDeviceAuthSession && isDeviceAuthActive(codexDeviceAuthSession.status)) {
+    return codexDeviceAuthSession;
+  }
+
+  const codexBin = String(config.codexBin ?? "codex").trim() || "codex";
+  const session = {
+    id: createSessionId(),
+    status: "starting",
+    startedAt: new Date().toISOString(),
+    codexBin,
+    loginUrl: "",
+    code: "",
+    logLines: [],
+    error: "",
+    child: null,
+    restartedBots: [],
+    restartFailures: [],
+  };
+
+  const child = spawn(codexBin, ["login", "--device-auth"], {
+    cwd: config.kernelRootPath,
+    shell: false,
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+    env: process.env,
+  });
+  session.child = child;
+  codexDeviceAuthSession = session;
+
+  child.stdout.on("data", (chunk) => {
+    appendDeviceAuthOutput(session, chunk);
+  });
+  child.stderr.on("data", (chunk) => {
+    appendDeviceAuthOutput(session, chunk);
+  });
+
+  child.once("error", (error) => {
+    session.child = null;
+    session.status = "failed";
+    session.error = sanitizeError(error);
+  });
+
+  child.once("exit", (code) => {
+    session.child = null;
+    if (session.status === "canceled") {
+      return;
+    }
+
+    if (code === 0) {
+      session.status = "succeeded";
+      void restartRunningBots()
+        .then((restarted) => {
+          session.restartedBots = restarted.restartedBotIds;
+          session.restartFailures = restarted.failures;
+        })
+        .catch((error) => {
+          session.restartFailures = [{ botId: "*", error: sanitizeError(error) }];
+        });
+      return;
+    }
+
+    session.status = "failed";
+    session.error =
+      firstNonEmptyLine(session.error, ...session.logLines.slice(-12)) ||
+      `Codex login exited with code ${String(code ?? "unknown")}.`;
+  });
+
+  return session;
+}
+
+function cancelCodexDeviceAuthSession() {
+  if (!codexDeviceAuthSession || !isDeviceAuthActive(codexDeviceAuthSession.status)) {
+    return false;
+  }
+
+  codexDeviceAuthSession.status = "canceled";
+  codexDeviceAuthSession.error = "Canceled by user.";
+  try {
+    codexDeviceAuthSession.child?.kill("SIGTERM");
+  } catch {
+    // ignore
+  }
+  codexDeviceAuthSession.child = null;
+  return true;
+}
+
+function getCodexDeviceAuthSnapshot() {
+  const session = codexDeviceAuthSession;
+  if (!session) {
+    return { status: "idle" };
+  }
+
+  return {
+    status: session.status,
+    startedAt: session.startedAt,
+    loginUrl: session.loginUrl || undefined,
+    code: session.code || undefined,
+    detail: session.error || undefined,
+    restartedBots: session.restartedBots,
+    restartFailures: session.restartFailures,
+  };
+}
+
+async function waitForDeviceCode(session, timeoutMs) {
+  const timeout = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 10_000;
+  const started = Date.now();
+
+  while (Date.now() - started < timeout) {
+    if (session.status === "failed" || session.status === "canceled") {
+      return false;
+    }
+    if (session.loginUrl && session.code) {
+      if (session.status === "starting") {
+        session.status = "pending";
+      }
+      return true;
+    }
+    await sleep(150);
+  }
+
+  return Boolean(session.loginUrl && session.code);
+}
+
+function appendDeviceAuthOutput(session, chunk) {
+  const text = stripAnsi(String(chunk ?? ""));
+  if (!text.trim()) {
+    return;
+  }
+
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (lines.length === 0) {
+    return;
+  }
+
+  session.logLines.push(...lines);
+  if (session.logLines.length > 120) {
+    session.logLines = session.logLines.slice(-120);
+  }
+
+  if (!session.loginUrl) {
+    const url = findDeviceLoginUrl(lines);
+    if (url) {
+      session.loginUrl = url;
+    }
+  }
+
+  if (!session.code) {
+    const code = findDeviceCode(lines);
+    if (code) {
+      session.code = code;
+    }
+  }
+
+  if (session.loginUrl && session.code && session.status === "starting") {
+    session.status = "pending";
+  }
+}
+
+function findDeviceLoginUrl(lines) {
+  for (const line of lines) {
+    const urls = line.match(/https?:\/\/\S+/g);
+    if (!urls) {
+      continue;
+    }
+    for (const url of urls) {
+      if (url.includes("/codex/device")) {
+        return url;
+      }
+    }
+  }
+  return "";
+}
+
+function findDeviceCode(lines) {
+  for (const line of lines) {
+    const match = line.match(/\b[A-Z0-9]{4}-[A-Z0-9]{5}\b/);
+    if (match?.[0]) {
+      return match[0];
+    }
+  }
+  return "";
+}
+
+function stripAnsi(value) {
+  return String(value ?? "").replace(ANSI_ESCAPE_PATTERN, "");
+}
+
+function isDeviceAuthActive(status) {
+  const value = String(status ?? "")
+    .trim()
+    .toLowerCase();
+  return value === "starting" || value === "pending";
+}
+
+function createSessionId() {
+  return randomBytes(8).toString("hex");
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function readCodexLoginStatus() {
+  const codexBin = String(config.codexBin ?? "codex").trim() || "codex";
+  const status = runCodexCommand(["login", "status"]);
+  return {
+    configured: status.ok,
+    codexBin,
+    detail: firstNonEmptyLine(status.errorMessage, status.stderr, status.stdout),
+  };
+}
+
+function looksLikeCodexApiKey(value) {
+  const key = String(value ?? "").trim();
+  if (key.length < 20 || key.length > 4096) {
+    return false;
+  }
+  if (!/^[A-Za-z0-9._-]+$/.test(key)) {
+    return false;
+  }
+  return key.startsWith("sk-");
+}
+
+function runCodexCommand(args, { inputText = "" } = {}) {
+  const codexBin = String(config.codexBin ?? "codex").trim() || "codex";
+  const result = spawnSync(codexBin, args, {
+    cwd: config.kernelRootPath,
+    shell: false,
+    stdio: ["pipe", "pipe", "pipe"],
+    windowsHide: true,
+    encoding: "utf8",
+    input: inputText,
+    env: process.env,
+  });
+
+  if (result.error) {
+    return {
+      ok: false,
+      status: 1,
+      stdout: "",
+      stderr: "",
+      errorMessage: formatCodexSpawnError(codexBin, result.error),
+    };
+  }
+
+  const status = Number.isInteger(result.status) ? result.status : 1;
+  return {
+    ok: status === 0,
+    status,
+    stdout: String(result.stdout ?? "").trim(),
+    stderr: String(result.stderr ?? "").trim(),
+    errorMessage: "",
+  };
+}
+
+function formatCodexSpawnError(codexBin, error) {
+  const code = String(error?.code ?? "")
+    .trim()
+    .toUpperCase();
+  if (code === "ENOENT") {
+    return `Codex binary '${codexBin}' was not found.`;
+  }
+  if (code === "EPERM") {
+    return `Codex binary '${codexBin}' cannot be executed (EPERM).`;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return `Failed to execute '${codexBin}': ${firstNonEmptyLine(message)}`;
+}
+
+function firstNonEmptyLine(...values) {
+  for (const value of values) {
+    const line = String(value ?? "")
+      .split(/\r?\n/)
+      .map((entry) => entry.trim())
+      .find(Boolean);
+    if (line) {
+      return line;
+    }
+  }
+  return "";
+}
+
+function redactSecret(text, secret) {
+  const input = String(text ?? "");
+  const token = String(secret ?? "").trim();
+  if (!token) {
+    return input;
+  }
+  return input.split(token).join("[redacted]");
+}
+
+async function restartRunningBots() {
+  const statuses = await botManager.listBotsLive();
+  const runningBotIds = statuses
+    .filter((entry) => entry?.running === true)
+    .map((entry) => String(entry?.id ?? "").trim())
+    .filter(Boolean);
+
+  const restartedBotIds = [];
+  const failures = [];
+
+  for (const botId of runningBotIds) {
+    try {
+      await botManager.stopBot(botId);
+      await botManager.startBot(botId);
+      restartedBotIds.push(botId);
+    } catch (error) {
+      failures.push({
+        botId,
+        error: sanitizeError(error),
+      });
+    }
+  }
+
+  return {
+    restartedBotIds,
+    failures,
+  };
 }

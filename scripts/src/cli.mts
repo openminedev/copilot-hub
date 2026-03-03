@@ -94,6 +94,11 @@ async function main() {
       runNode(["scripts/dist/service.mjs", ...rawArgs.slice(1)]);
       return;
     }
+    case "update":
+    case "upgrade": {
+      await runSelfUpdate();
+      return;
+    }
     default: {
       printUsage();
       process.exit(1);
@@ -258,6 +263,60 @@ async function maybeOfferServiceInstall() {
   writeServicePromptState("accepted");
 }
 
+async function runSelfUpdate() {
+  const serviceInstalled = isServiceAlreadyInstalled();
+  const runningBeforeUpdate = serviceInstalled ? isDaemonRunning() : hasRunningSupervisorWorkers();
+
+  if (serviceInstalled) {
+    const stopService = runNodeCapture(["scripts/dist/service.mjs", "stop"], "inherit");
+    if (!stopService.ok) {
+      console.log("Service stop reported an error. Continuing update attempt.");
+    }
+  } else {
+    const stopLocal = runNodeCapture(["scripts/dist/supervisor.mjs", "down"], "inherit");
+    if (!stopLocal.ok) {
+      console.log("Local stop reported an error. Continuing update attempt.");
+    }
+  }
+
+  const install = runNpm(["install", "-g", "copilot-hub@latest"], "inherit");
+  if (!install.ok) {
+    const detail =
+      firstLine(install.errorMessage) || firstLine(install.stderr) || firstLine(install.stdout);
+    const normalizedDetail = detail.toLowerCase();
+    if (normalizedDetail.includes("ebusy") || normalizedDetail.includes("resource busy")) {
+      throw new Error(
+        [
+          "Update failed because files are locked by another process (EBUSY).",
+          "Close other terminals using copilot-hub, then retry 'copilot-hub update'.",
+        ].join("\n"),
+      );
+    }
+    throw new Error(`Update failed: ${detail || "Unknown npm error."}`);
+  }
+
+  console.log("copilot-hub updated to latest.");
+
+  if (!runningBeforeUpdate) {
+    console.log("Services remain stopped. Run 'copilot-hub start' when ready.");
+    return;
+  }
+
+  if (serviceInstalled) {
+    const startService = runNodeCapture(["scripts/dist/service.mjs", "start"], "inherit");
+    if (!startService.ok) {
+      console.log("Update completed, but service start failed. Run 'copilot-hub start' manually.");
+      return;
+    }
+    return;
+  }
+
+  const startLocal = runNodeCapture(["scripts/dist/supervisor.mjs", "up"], "inherit");
+  if (!startLocal.ok) {
+    console.log("Update completed, but local start failed. Run 'copilot-hub start' manually.");
+  }
+}
+
 function isServiceSupportedOnCurrentPlatform() {
   return (
     process.platform === "win32" || process.platform === "linux" || process.platform === "darwin"
@@ -274,6 +333,18 @@ function isServiceAlreadyInstalled() {
     return false;
   }
   return status.ok;
+}
+
+function isDaemonRunning() {
+  const status = runNodeCapture(["scripts/dist/daemon.mjs", "status"], "pipe");
+  const output = String(status.combinedOutput ?? "").toLowerCase();
+  return output.includes("=== daemon ===") && output.includes("running: yes");
+}
+
+function hasRunningSupervisorWorkers() {
+  const status = runNodeCapture(["scripts/dist/supervisor.mjs", "status"], "pipe");
+  const output = String(status.combinedOutput ?? "").toLowerCase();
+  return output.includes("running: yes");
 }
 
 function readServicePromptState() {
@@ -693,6 +764,7 @@ function printUsage() {
   console.log(
     [
       "Usage: node scripts/dist/cli.mjs <start|stop|restart|status|logs|configure|service|version|help>",
+      "  node scripts/dist/cli.mjs <update|upgrade>",
       "Service management:",
       "  node scripts/dist/cli.mjs service <install|uninstall|status|start|stop|help>",
     ].join("\n"),
