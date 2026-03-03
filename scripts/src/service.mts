@@ -171,7 +171,11 @@ async function stopService() {
 
 function installWindowsAutoStart() {
   ensureCommandAvailable("schtasks", ["/?"], "Windows Task Scheduler is not available.");
-  ensureCommandAvailable("reg", ["query", WINDOWS_RUN_KEY_PATH], "Windows registry tools are not available.");
+  ensureCommandAvailable(
+    "reg",
+    ["query", WINDOWS_RUN_KEY_PATH],
+    "Windows registry tools are not available.",
+  );
 
   const command = buildWindowsLaunchCommand();
   const taskCreate = runChecked(
@@ -195,7 +199,11 @@ function installWindowsAutoStart() {
 
 function uninstallWindowsAutoStart() {
   ensureCommandAvailable("schtasks", ["/?"], "Windows Task Scheduler is not available.");
-  ensureCommandAvailable("reg", ["query", WINDOWS_RUN_KEY_PATH], "Windows registry tools are not available.");
+  ensureCommandAvailable(
+    "reg",
+    ["query", WINDOWS_RUN_KEY_PATH],
+    "Windows registry tools are not available.",
+  );
 
   let removed = false;
 
@@ -204,7 +212,10 @@ function uninstallWindowsAutoStart() {
   });
   if (taskDelete.ok) {
     removed = true;
-  } else if (!isNotFoundMessage(taskDelete.combinedOutput) && !isAccessDeniedMessage(taskDelete.combinedOutput)) {
+  } else if (
+    !isNotFoundMessage(taskDelete.combinedOutput) &&
+    !isAccessDeniedMessage(taskDelete.combinedOutput)
+  ) {
     throw new Error(taskDelete.combinedOutput || "Failed to remove Windows Task Scheduler entry.");
   }
 
@@ -216,7 +227,9 @@ function uninstallWindowsAutoStart() {
   if (runKeyDelete.ok) {
     removed = true;
   } else if (!isRegistryValueNotFoundMessage(runKeyDelete.combinedOutput)) {
-    throw new Error(runKeyDelete.combinedOutput || "Failed to remove Windows startup registry entry.");
+    throw new Error(
+      runKeyDelete.combinedOutput || "Failed to remove Windows startup registry entry.",
+    );
   }
 
   return removed;
@@ -224,7 +237,11 @@ function uninstallWindowsAutoStart() {
 
 function showWindowsAutoStartStatus() {
   ensureCommandAvailable("schtasks", ["/?"], "Windows Task Scheduler is not available.");
-  ensureCommandAvailable("reg", ["query", WINDOWS_RUN_KEY_PATH], "Windows registry tools are not available.");
+  ensureCommandAvailable(
+    "reg",
+    ["query", WINDOWS_RUN_KEY_PATH],
+    "Windows registry tools are not available.",
+  );
 
   const runKey = queryWindowsRunKey();
   if (runKey.installed) {
@@ -235,7 +252,10 @@ function showWindowsAutoStartStatus() {
   const result = runChecked("schtasks", ["/Query", "/TN", WINDOWS_TASK_NAME, "/FO", "LIST", "/V"], {
     allowFailure: true,
   });
-  if (!result.ok && (isNotFoundMessage(result.combinedOutput) || isAccessDeniedMessage(result.combinedOutput))) {
+  if (
+    !result.ok &&
+    (isNotFoundMessage(result.combinedOutput) || isAccessDeniedMessage(result.combinedOutput))
+  ) {
     console.log("Service not installed.");
     return;
   }
@@ -266,11 +286,9 @@ function startWindowsAutoStart() {
 }
 
 function queryWindowsRunKey() {
-  const result = runChecked(
-    "reg",
-    ["query", WINDOWS_RUN_KEY_PATH, "/v", WINDOWS_RUN_VALUE_NAME],
-    { allowFailure: true },
-  );
+  const result = runChecked("reg", ["query", WINDOWS_RUN_KEY_PATH, "/v", WINDOWS_RUN_VALUE_NAME], {
+    allowFailure: true,
+  });
   if (result.ok) {
     return { installed: true };
   }
@@ -283,7 +301,17 @@ function queryWindowsRunKey() {
 function installWindowsRunKey(command) {
   runChecked(
     "reg",
-    ["add", WINDOWS_RUN_KEY_PATH, "/v", WINDOWS_RUN_VALUE_NAME, "/t", "REG_SZ", "/d", command, "/f"],
+    [
+      "add",
+      WINDOWS_RUN_KEY_PATH,
+      "/v",
+      WINDOWS_RUN_VALUE_NAME,
+      "/t",
+      "REG_SZ",
+      "/d",
+      command,
+      "/f",
+    ],
     { stdio: "pipe" },
   );
 }
