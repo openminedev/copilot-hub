@@ -385,6 +385,7 @@ function runChecked(command, args, { stdio = "pipe", allowFailure = false } = {}
     cwd: repoRoot,
     shell: false,
     stdio: spawnStdio,
+    windowsHide: true,
     encoding: "utf8",
     env: process.env,
   });
