@@ -81,6 +81,7 @@ copilot-hub start
 ```
 
 `start` runs guided setup automatically if required values are missing.
+On interactive terminals, `start` can also offer OS-native service installation when it is not yet configured.
 
 ## Quick start from source
 
@@ -174,6 +175,22 @@ npm run lint
 npm run format:check
 npm run check:apps
 ```
+
+Service mode (optional, OS-native):
+
+```bash
+copilot-hub service install
+copilot-hub service status
+copilot-hub service stop
+copilot-hub service start
+copilot-hub service uninstall
+```
+
+Service backend by OS:
+
+- Windows: Task Scheduler (`CopilotHub`) with user-startup fallback if task creation is denied
+- Linux: systemd user service (`copilot-hub.service`)
+- macOS: launchd agent (`com.copilot-hub.service`)
 
 ## npm release (CI)
 

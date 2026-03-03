@@ -10,6 +10,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const repoRoot = path.resolve(__dirname, "..", "..");
 const packageJsonPath = path.join(repoRoot, "package.json");
+const runtimeDir = path.join(repoRoot, ".copilot-hub");
+const servicePromptStatePath = path.join(runtimeDir, "service-onboarding.json");
 const nodeBin = process.execPath;
 const agentEngineEnvPath = path.join(repoRoot, "apps", "agent-engine", ".env");
 const controlPlaneEnvPath = path.join(repoRoot, "apps", "control-plane", ".env");
@@ -46,6 +48,7 @@ async function main() {
       runNode(["scripts/dist/configure.mjs", "--required-only"]);
       runNode(["scripts/dist/ensure-shared-build.mjs"]);
       await ensureCodexLogin();
+      await maybeOfferServiceInstall();
       runNode(["scripts/dist/supervisor.mjs", "up"]);
       return;
     }
@@ -70,6 +73,10 @@ async function main() {
       runNode(["scripts/dist/configure.mjs"]);
       return;
     }
+    case "service": {
+      runNode(["scripts/dist/service.mjs", ...rawArgs.slice(1)]);
+      return;
+    }
     default: {
       printUsage();
       process.exit(1);
@@ -78,16 +85,35 @@ async function main() {
 }
 
 function runNode(scriptArgs) {
-  const result = spawnSync(nodeBin, scriptArgs, {
-    cwd: repoRoot,
-    stdio: "inherit",
-    shell: false,
-  });
-
+  const result = runNodeCapture(scriptArgs, "inherit");
   const code = Number.isInteger(result.status) ? result.status : 1;
   if (code !== 0) {
     process.exit(code);
   }
+}
+
+function runNodeCapture(scriptArgs, stdioMode = "pipe") {
+  const stdio: any = stdioMode === "inherit" ? "inherit" : ["ignore", "pipe", "pipe"];
+  const result = spawnSync(nodeBin, scriptArgs, {
+    cwd: repoRoot,
+    stdio,
+    shell: false,
+    encoding: "utf8",
+  });
+
+  const stdout = String(result.stdout ?? "").trim();
+  const stderr = String(result.stderr ?? "").trim();
+  const combinedOutput = [stdout, stderr].filter(Boolean).join("\n").trim();
+  const ok = !result.error && result.status === 0;
+
+  return {
+    ok,
+    status: result.status,
+    stdout,
+    stderr,
+    combinedOutput,
+    error: result.error,
+  };
 }
 
 async function ensureCodexLogin() {
@@ -171,6 +197,101 @@ async function ensureCodexLogin() {
   }
 
   console.log("Codex login configured.");
+}
+
+async function maybeOfferServiceInstall() {
+  if (!process.stdin.isTTY) {
+    return;
+  }
+  if (!isServiceSupportedOnCurrentPlatform()) {
+    return;
+  }
+  if (isServiceAlreadyInstalled()) {
+    return;
+  }
+
+  const state = readServicePromptState();
+  if (state?.decision === "declined") {
+    return;
+  }
+
+  const rl = createInterface({ input, output });
+  let shouldInstall = false;
+  try {
+    shouldInstall = await askYesNo(
+      rl,
+      "Enable OS-native auto-start service now? (recommended for reliability)",
+      false,
+    );
+  } finally {
+    rl.close();
+  }
+
+  if (!shouldInstall) {
+    writeServicePromptState("declined");
+    console.log("Service setup skipped. You can run 'copilot-hub service install' anytime.");
+    return;
+  }
+
+  const install = runNodeCapture(["scripts/dist/service.mjs", "install"], "inherit");
+  if (!install.ok) {
+    console.log("Service install failed. Continuing in local mode.");
+    return;
+  }
+  writeServicePromptState("accepted");
+}
+
+function isServiceSupportedOnCurrentPlatform() {
+  return (
+    process.platform === "win32" || process.platform === "linux" || process.platform === "darwin"
+  );
+}
+
+function isServiceAlreadyInstalled() {
+  const status = runNodeCapture(["scripts/dist/service.mjs", "status"], "pipe");
+  const message = String(status.combinedOutput ?? "").toLowerCase();
+  if (message.includes("service not installed")) {
+    return false;
+  }
+  if (message.includes("not installed")) {
+    return false;
+  }
+  return status.ok;
+}
+
+function readServicePromptState() {
+  if (!fs.existsSync(servicePromptStatePath)) {
+    return null;
+  }
+  try {
+    const raw = fs.readFileSync(servicePromptStatePath, "utf8");
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeServicePromptState(decision) {
+  try {
+    fs.mkdirSync(runtimeDir, { recursive: true });
+    fs.writeFileSync(
+      servicePromptStatePath,
+      `${JSON.stringify(
+        {
+          decision: String(decision ?? "")
+            .trim()
+            .toLowerCase(),
+          updatedAt: new Date().toISOString(),
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+  } catch {
+    // Non-critical state cache only.
+  }
 }
 
 async function recoverCodexBinary({ resolved, status }) {
@@ -553,7 +674,11 @@ function spawnNpm(args, options) {
 
 function printUsage() {
   console.log(
-    "Usage: node scripts/dist/cli.mjs <start|stop|restart|status|logs|configure|version|help>",
+    [
+      "Usage: node scripts/dist/cli.mjs <start|stop|restart|status|logs|configure|service|version|help>",
+      "Service management:",
+      "  node scripts/dist/cli.mjs service <install|uninstall|status|start|stop|help>",
+    ].join("\n"),
   );
 }
 
