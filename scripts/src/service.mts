@@ -577,28 +577,44 @@ function isNotFoundMessage(value) {
 }
 
 function isAccessDeniedMessage(value) {
-  const message = String(value ?? "").toLowerCase();
-  if (!message) {
+  const simplified = simplifyMessageForMatch(value);
+  if (!simplified) {
     return false;
   }
-  return message.includes("access is denied") || message.includes("accès refusé");
+  if (simplified.includes("access is denied")) {
+    return true;
+  }
+  if (simplified.includes("acces refuse")) {
+    return true;
+  }
+  return simplified.includes("refus") && simplified.includes("acc");
 }
 
 function isRegistryValueNotFoundMessage(value) {
-  const message = String(value ?? "").toLowerCase();
-  if (!message) {
+  const simplified = simplifyMessageForMatch(value);
+  if (!simplified) {
     return false;
   }
   return (
-    message.includes("unable to find the specified registry key or value") ||
-    message.includes("the system was unable to find the specified registry key or value") ||
-    message.includes("impossible de trouver") ||
-    message.includes("n'a pas trouvé") ||
-    message.includes("n’a pas trouvé") ||
-    message.includes("n a pas trouvé") ||
-    message.includes("la clé ou la valeur de registre spécifiée") ||
-    message.includes("introuvable")
+    simplified.includes("unable to find the specified registry key or value") ||
+    simplified.includes("the system was unable to find the specified registry key or value") ||
+    simplified.includes("impossible de trouver") ||
+    simplified.includes("n'a pas trouve") ||
+    simplified.includes("n a pas trouve") ||
+    simplified.includes("la cle ou la valeur de registre specifiee") ||
+    simplified.includes("introuvable")
   );
+}
+
+function simplifyMessageForMatch(value) {
+  return String(value ?? "")
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\uFFFD/g, "")
+    .replace(/[?]/g, "'")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function getErrorMessage(error) {
