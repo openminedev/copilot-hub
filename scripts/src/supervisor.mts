@@ -43,6 +43,9 @@ async function main() {
     case "up":
       await startServices();
       return;
+    case "ensure":
+      await ensureServices();
+      return;
     case "down":
       await stopServices();
       return;
@@ -76,6 +79,22 @@ async function startServices() {
       process.exit(1);
     }
     started.push(service);
+  }
+}
+
+async function ensureServices() {
+  ensureRuntimeDirs();
+
+  let hasFailure = false;
+  for (const service of SERVICES) {
+    const ok = await startService(service, { suppressAlreadyRunning: true });
+    if (!ok) {
+      hasFailure = true;
+    }
+  }
+
+  if (hasFailure) {
+    process.exit(1);
   }
 }
 
@@ -113,11 +132,14 @@ function showLogs() {
   }
 }
 
-async function startService(service) {
+async function startService(service, options: { suppressAlreadyRunning?: boolean } = {}) {
+  const suppressAlreadyRunning = options?.suppressAlreadyRunning === true;
   const existing = readState(service);
   const existingPid = normalizePid(existing?.pid);
   if (existingPid > 0 && isProcessRunning(existingPid)) {
-    console.log(`[${service.id}] already running (pid ${existingPid})`);
+    if (!suppressAlreadyRunning) {
+      console.log(`[${service.id}] already running (pid ${existingPid})`);
+    }
     return true;
   }
 
@@ -328,5 +350,5 @@ function sleep(ms) {
 }
 
 function printUsage() {
-  console.log("Usage: node scripts/dist/supervisor.mjs <up|down|restart|status|logs>");
+  console.log("Usage: node scripts/dist/supervisor.mjs <up|ensure|down|restart|status|logs>");
 }

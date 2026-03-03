@@ -49,19 +49,36 @@ async function main() {
       runNode(["scripts/dist/ensure-shared-build.mjs"]);
       await ensureCodexLogin();
       await maybeOfferServiceInstall();
+      if (isServiceAlreadyInstalled()) {
+        runNode(["scripts/dist/service.mjs", "start"]);
+        return;
+      }
       runNode(["scripts/dist/supervisor.mjs", "up"]);
       return;
     }
     case "stop": {
+      if (isServiceAlreadyInstalled()) {
+        runNode(["scripts/dist/service.mjs", "stop"]);
+        return;
+      }
       runNode(["scripts/dist/supervisor.mjs", "down"]);
       return;
     }
     case "restart": {
       runNode(["scripts/dist/ensure-shared-build.mjs"]);
+      if (isServiceAlreadyInstalled()) {
+        runNode(["scripts/dist/service.mjs", "stop"]);
+        runNode(["scripts/dist/service.mjs", "start"]);
+        return;
+      }
       runNode(["scripts/dist/supervisor.mjs", "restart"]);
       return;
     }
     case "status": {
+      if (isServiceAlreadyInstalled()) {
+        runNode(["scripts/dist/daemon.mjs", "status"]);
+        return;
+      }
       runNode(["scripts/dist/supervisor.mjs", "status"]);
       return;
     }

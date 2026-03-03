@@ -11,7 +11,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const repoRoot = path.resolve(__dirname, "..", "..");
 const nodeBin = process.execPath;
-const supervisorScriptPath = path.join(repoRoot, "scripts", "dist", "supervisor.mjs");
+const daemonScriptPath = path.join(repoRoot, "scripts", "dist", "daemon.mjs");
 
 const WINDOWS_TASK_NAME = "CopilotHub";
 const WINDOWS_RUN_KEY_PATH = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
@@ -57,7 +57,7 @@ async function main() {
 }
 
 async function installService() {
-  ensureSupervisorScript();
+  ensureDaemonScript();
 
   if (process.platform === "win32") {
     const mode = installWindowsAutoStart();
@@ -151,7 +151,7 @@ async function startService() {
 
 async function stopService() {
   if (process.platform === "win32") {
-    runSupervisor("down");
+    runDaemon("stop");
     return;
   }
 
@@ -193,7 +193,7 @@ function installWindowsAutoStart() {
   }
 
   installWindowsRunKey(command);
-  runSupervisor("up");
+  runDaemon("start");
   return "run-key";
 }
 
@@ -204,6 +204,7 @@ function uninstallWindowsAutoStart() {
     ["query", WINDOWS_RUN_KEY_PATH],
     "Windows registry tools are not available.",
   );
+  runDaemon("stop", { allowFailure: true });
 
   let removed = false;
 
@@ -279,7 +280,7 @@ function runWindowsTask() {
 function startWindowsAutoStart() {
   const runKey = queryWindowsRunKey();
   if (runKey.installed) {
-    runSupervisor("up");
+    runDaemon("start");
     return;
   }
   runWindowsTask();
@@ -436,8 +437,8 @@ function buildLinuxUnitContent() {
     "[Service]",
     "Type=simple",
     `WorkingDirectory=${repoRoot}`,
-    `ExecStart="${nodeBin}" "${supervisorScriptPath}" up`,
-    `ExecStop="${nodeBin}" "${supervisorScriptPath}" down`,
+    `ExecStart="${nodeBin}" "${daemonScriptPath}" run`,
+    `ExecStop="${nodeBin}" "${daemonScriptPath}" stop`,
     "Restart=always",
     "RestartSec=3",
     "KillMode=process",
@@ -454,7 +455,7 @@ function buildMacosPlist() {
   const values = {
     label: escapeXml(MACOS_LABEL),
     node: escapeXml(nodeBin),
-    script: escapeXml(supervisorScriptPath),
+    script: escapeXml(daemonScriptPath),
     cwd: escapeXml(repoRoot),
     stdoutPath: escapeXml(stdoutPath),
     stderrPath: escapeXml(stderrPath),
@@ -471,7 +472,7 @@ function buildMacosPlist() {
     "  <array>",
     `    <string>${values.node}</string>`,
     `    <string>${values.script}</string>`,
-    "    <string>up</string>",
+    "    <string>run</string>",
     "  </array>",
     "  <key>WorkingDirectory</key>",
     `  <string>${values.cwd}</string>`,
@@ -489,11 +490,11 @@ function buildMacosPlist() {
   ].join("\n");
 }
 
-function ensureSupervisorScript() {
-  if (!fs.existsSync(supervisorScriptPath)) {
+function ensureDaemonScript() {
+  if (!fs.existsSync(daemonScriptPath)) {
     throw new Error(
       [
-        "Supervisor script is missing.",
+        "Daemon script is missing.",
         "Run 'npm run build:scripts' (or reinstall package) and retry.",
       ].join("\n"),
     );
@@ -516,14 +517,13 @@ function ensureCommandAvailable(command, args, errorMessage) {
   throw new Error(errorMessage);
 }
 
-function runSupervisor(actionValue) {
-  const result = runChecked(nodeBin, [supervisorScriptPath, String(actionValue ?? "").trim()], {
+function runDaemon(actionValue, { allowFailure = false } = {}) {
+  const result = runChecked(nodeBin, [daemonScriptPath, String(actionValue ?? "").trim()], {
     stdio: "inherit",
+    allowFailure,
   });
-  if (!result.ok) {
-    throw new Error(
-      result.combinedOutput || `Failed to execute supervisor action '${actionValue}'.`,
-    );
+  if (!result.ok && !allowFailure) {
+    throw new Error(result.combinedOutput || `Failed to execute daemon action '${actionValue}'.`);
   }
 }
 
@@ -609,7 +609,7 @@ function getErrorMessage(error) {
 }
 
 function buildWindowsLaunchCommand() {
-  return `"${nodeBin}" "${supervisorScriptPath}" up`;
+  return `"${nodeBin}" "${daemonScriptPath}" run`;
 }
 
 function escapeXml(value) {

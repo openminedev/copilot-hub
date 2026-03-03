@@ -186,6 +186,8 @@ copilot-hub service start
 copilot-hub service uninstall
 ```
 
+Service mode runs a persistent daemon that keeps `agent-engine` and `control-plane` alive and auto-restarts them if one exits.
+
 Service backend by OS:
 
 - Windows: Task Scheduler (`CopilotHub`) with user-startup fallback if task creation is denied
