@@ -14,6 +14,7 @@ const pidsDir = path.join(runtimeDir, "pids");
 const logsDir = path.join(repoRoot, "logs");
 
 const daemonStatePath = path.join(pidsDir, "daemon.json");
+const lastStartupErrorPath = path.join(runtimeDir, "last-startup-error.json");
 const daemonLogPath = path.join(logsDir, "service-daemon.log");
 const controlPlaneLogPath = path.join(logsDir, "control-plane.log");
 const agentEngineLogPath = path.join(logsDir, "agent-engine.log");
@@ -125,6 +126,7 @@ async function runDaemonLoop() {
   while (!state.stopping) {
     const ensureResult = runSupervisor("ensure", { allowFailure: true });
     if (ensureResult.ok) {
+      clearLastStartupError();
       if (failureCount > 0) {
         console.log("[daemon] workers recovered.");
       }
@@ -135,6 +137,7 @@ async function runDaemonLoop() {
 
     const fatal = detectFatalStartupError(ensureResult);
     if (fatal) {
+      writeLastStartupError(fatal);
       console.error(`[daemon] fatal startup error: ${fatal.reason}`);
       console.error(`[daemon] action required: ${fatal.action}`);
       state.stopping = true;
@@ -191,6 +194,7 @@ function showDaemonStatus() {
   console.log(`running: ${running ? "yes" : "no"}`);
   console.log(`pid: ${running ? String(pid) : "-"}`);
   console.log(`logFile: ${daemonLogPath}`);
+  printLastStartupError();
 
   if (!fs.existsSync(supervisorScriptPath)) {
     console.log("\n(worker status unavailable: supervisor script missing)");
@@ -466,22 +470,22 @@ function getErrorMessage(error) {
 }
 
 function detectFatalStartupError(ensureResult) {
-  const evidence = [
+  const evidenceChunks = [
     String(ensureResult?.combinedOutput ?? ""),
     readLogTail(controlPlaneLogPath, 120),
     readLogTail(agentEngineLogPath, 120),
-  ]
-    .map((chunk) => String(chunk ?? "").trim())
-    .filter(Boolean)
-    .join("\n")
-    .toLowerCase();
+  ].map((chunk) => String(chunk ?? "").trim());
 
-  const missingHubToken =
-    evidence.includes("hub telegram token is missing") && evidence.includes("hub_telegram_token");
+  const missingHubTokenLine = findLineContaining(
+    evidenceChunks,
+    (line) => line.includes("hub telegram token is missing") && line.includes("hub_telegram_token"),
+  );
+  const missingHubToken = Boolean(missingHubTokenLine);
   if (missingHubToken) {
     return {
-      reason: "Hub Telegram token is missing (HUB_TELEGRAM_TOKEN).",
-      action: "Run 'copilot-hub configure', set the token, then run 'copilot-hub start'.",
+      reason: missingHubTokenLine || "Hub Telegram token is missing (HUB_TELEGRAM_TOKEN).",
+      action: "Run 'copilot-hub start' in a terminal (it will guide setup), then retry service.",
+      detectedAt: new Date().toISOString(),
     };
   }
 
@@ -499,6 +503,71 @@ function readLogTail(filePath, maxLines = 120) {
     return lines.slice(-maxLines).join("\n").trim();
   } catch {
     return "";
+  }
+}
+
+function findLineContaining(chunks, predicate) {
+  const lines = chunks
+    .flatMap((chunk) => String(chunk ?? "").split(/\r?\n/))
+    .map((line) => String(line ?? "").trim())
+    .filter(Boolean);
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index];
+    if (predicate(line.toLowerCase())) {
+      return line;
+    }
+  }
+  return "";
+}
+
+function writeLastStartupError(value) {
+  try {
+    fs.mkdirSync(runtimeDir, { recursive: true });
+    fs.writeFileSync(lastStartupErrorPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  } catch {
+    // Best effort only.
+  }
+}
+
+function readLastStartupError() {
+  if (!fs.existsSync(lastStartupErrorPath)) {
+    return null;
+  }
+  try {
+    const raw = fs.readFileSync(lastStartupErrorPath, "utf8");
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function clearLastStartupError() {
+  if (!fs.existsSync(lastStartupErrorPath)) {
+    return;
+  }
+  try {
+    fs.rmSync(lastStartupErrorPath, { force: true });
+  } catch {
+    // Best effort only.
+  }
+}
+
+function printLastStartupError() {
+  const issue = readLastStartupError();
+  if (!issue) {
+    return;
+  }
+
+  console.log("\n=== last startup error ===");
+  if (issue.detectedAt) {
+    console.log(`detectedAt: ${String(issue.detectedAt)}`);
+  }
+  if (issue.reason) {
+    console.log(`reason: ${String(issue.reason)}`);
+  }
+  if (issue.action) {
+    console.log(`action: ${String(issue.action)}`);
   }
 }
 
