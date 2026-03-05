@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { spawn, spawnSync } from "node:child_process";
+import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -141,7 +142,11 @@ async function runDaemonLoop() {
       console.error(`[daemon] fatal startup error: ${fatal.reason}`);
       console.error(`[daemon] action required: ${fatal.action}`);
       state.stopping = true;
-      await shutdownDaemon(state, { reason: "fatal-configuration", exitCode: 1 });
+      await shutdownDaemon(state, {
+        reason: "fatal-configuration",
+        exitCode: 1,
+        pauseBeforeExit: true,
+      });
       return;
     }
 
@@ -231,7 +236,7 @@ function setupSignalHandlers(state) {
   });
 }
 
-async function shutdownDaemon(state, { reason, exitCode }) {
+async function shutdownDaemon(state, { reason, exitCode, pauseBeforeExit = false }) {
   if (state.shuttingDown) {
     return;
   }
@@ -240,6 +245,9 @@ async function shutdownDaemon(state, { reason, exitCode }) {
   console.log(`[daemon] stopping (${reason})...`);
   runSupervisor("down", { allowFailure: true });
   removeDaemonState();
+  if (pauseBeforeExit) {
+    await maybePauseWindowBeforeExit();
+  }
 
   process.exit(exitCode);
 }
@@ -467,6 +475,41 @@ function getErrorMessage(error) {
     return error.message;
   }
   return String(error ?? "Unknown error.");
+}
+
+async function maybePauseWindowBeforeExit() {
+  if (!shouldPauseBeforeExit()) {
+    return;
+  }
+
+  const rl = createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+  try {
+    console.log("");
+    await rl.question("[daemon] Press Enter to close this window.");
+  } catch {
+    // Ignore pause errors and exit anyway.
+  } finally {
+    rl.close();
+  }
+}
+
+function shouldPauseBeforeExit() {
+  if (process.platform !== "win32") {
+    return false;
+  }
+
+  if (!process.stdin || !process.stdout) {
+    return false;
+  }
+
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    return false;
+  }
+
+  return true;
 }
 
 function detectFatalStartupError(ensureResult) {
