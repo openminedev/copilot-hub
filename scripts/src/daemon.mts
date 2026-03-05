@@ -15,6 +15,8 @@ const logsDir = path.join(repoRoot, "logs");
 
 const daemonStatePath = path.join(pidsDir, "daemon.json");
 const daemonLogPath = path.join(logsDir, "service-daemon.log");
+const controlPlaneLogPath = path.join(logsDir, "control-plane.log");
+const agentEngineLogPath = path.join(logsDir, "agent-engine.log");
 const daemonScriptPath = path.join(repoRoot, "scripts", "dist", "daemon.mjs");
 const supervisorScriptPath = path.join(repoRoot, "scripts", "dist", "supervisor.mjs");
 const nodeBin = process.execPath;
@@ -129,6 +131,15 @@ async function runDaemonLoop() {
       failureCount = 0;
       await sleepInterruptible(BASE_CHECK_MS, () => state.stopping);
       continue;
+    }
+
+    const fatal = detectFatalStartupError(ensureResult);
+    if (fatal) {
+      console.error(`[daemon] fatal startup error: ${fatal.reason}`);
+      console.error(`[daemon] action required: ${fatal.action}`);
+      state.stopping = true;
+      await shutdownDaemon(state, { reason: "fatal-configuration", exitCode: 1 });
+      return;
     }
 
     failureCount += 1;
@@ -452,6 +463,43 @@ function getErrorMessage(error) {
     return error.message;
   }
   return String(error ?? "Unknown error.");
+}
+
+function detectFatalStartupError(ensureResult) {
+  const evidence = [
+    String(ensureResult?.combinedOutput ?? ""),
+    readLogTail(controlPlaneLogPath, 120),
+    readLogTail(agentEngineLogPath, 120),
+  ]
+    .map((chunk) => String(chunk ?? "").trim())
+    .filter(Boolean)
+    .join("\n")
+    .toLowerCase();
+
+  const missingHubToken =
+    evidence.includes("hub telegram token is missing") && evidence.includes("hub_telegram_token");
+  if (missingHubToken) {
+    return {
+      reason: "Hub Telegram token is missing (HUB_TELEGRAM_TOKEN).",
+      action: "Run 'copilot-hub configure', set the token, then run 'copilot-hub start'.",
+    };
+  }
+
+  return null;
+}
+
+function readLogTail(filePath, maxLines = 120) {
+  try {
+    if (!fs.existsSync(filePath)) {
+      return "";
+    }
+
+    const content = fs.readFileSync(filePath, "utf8");
+    const lines = content.split(/\r?\n/);
+    return lines.slice(-maxLines).join("\n").trim();
+  } catch {
+    return "";
+  }
 }
 
 function printUsage() {
