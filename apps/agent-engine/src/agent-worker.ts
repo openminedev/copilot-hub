@@ -153,6 +153,10 @@ async function handleWorkerRequest(message: UnknownRecord): Promise<void> {
       result = await runtime.reloadCapabilities(capabilityDefinitions as any);
       break;
     }
+    case "setProviderOptions": {
+      result = await runtime.setProviderOptions(payload);
+      break;
+    }
     case "setProjectRoot": {
       const projectRoot = String(payload.projectRoot ?? "").trim();
       if (!projectRoot) {

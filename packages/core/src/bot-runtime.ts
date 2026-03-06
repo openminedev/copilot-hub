@@ -4,6 +4,7 @@ import { createChannelAdapter } from "./channel-factory.js";
 import { CapabilityManager } from "./capability-manager.js";
 import { KERNEL_VERSION } from "./kernel-version.js";
 import { createProjectFingerprint } from "./project-fingerprint.js";
+import { mergeProviderOptions } from "./provider-options.js";
 import { JsonStateStore } from "./state-store.js";
 import { createAssistantProvider } from "./provider-factory.js";
 
@@ -137,6 +138,8 @@ type ChannelRuntime = {
   runtimeName: string;
   getWorkspaceRoot: () => string;
   buildWebBotUrl: () => string;
+  getProviderOptions: () => Record<string, unknown>;
+  setProviderOptions: (options: Record<string, unknown>) => Promise<BotRuntimeStatus>;
   refreshProviderSession: (reason?: string) => Promise<{
     refreshed: boolean;
     channelsRestarted: boolean;
@@ -298,21 +301,8 @@ export class BotRuntime {
       await this.store.init();
       await this.#ensureStoreFingerprint();
 
-      this.provider = createAssistantProvider({
-        providerConfig: this.config.provider,
-        providerDefaults: this.providerDefaults,
-        workspaceRoot: this.projectRoot,
-        turnActivityTimeoutMs: this.turnActivityTimeoutMs,
-      });
-
-      this.engine = new ConversationEngine({
-        store: this.store as unknown as ConversationEngineInit["store"],
-        assistantProvider: this.provider as unknown as ConversationEngineInit["assistantProvider"],
-        projectRoot: this.projectRoot,
-        turnActivityTimeoutMs: this.turnActivityTimeoutMs,
-        maxMessages: this.maxMessages,
-        onApprovalRequested: (approval) => this.onApprovalRequested(approval),
-      });
+      this.provider = this.#createProvider();
+      this.engine = this.#createConversationEngine(this.provider);
 
       this.capabilityManager = new CapabilityManager({
         runtimeId: this.id,
@@ -401,17 +391,52 @@ export class BotRuntime {
     channelsRestarted: boolean;
     reason: string;
   }> {
-    const hadRunningChannels = this.channels.some((channel) => channel.getStatus().running);
-    await this.shutdown();
     await this.ensureInitialized();
-    if (hadRunningChannels) {
-      await this.startChannels();
-    }
+    await this.#recreateProviderSession();
     return {
       refreshed: true,
-      channelsRestarted: hadRunningChannels,
+      channelsRestarted: false,
       reason: String(reason ?? "manual provider session refresh"),
     };
+  }
+
+  async setProviderOptions(nextOptions: Record<string, unknown>): Promise<BotRuntimeStatus> {
+    const previousProvider = {
+      kind: String(this.config.provider?.kind ?? "codex").trim() || "codex",
+      options: { ...asRecord(this.config.provider?.options) },
+    };
+    const nextProvider = {
+      ...previousProvider,
+      options: mergeProviderOptions(previousProvider.options, nextOptions),
+    };
+
+    this.config = {
+      ...this.config,
+      provider: nextProvider,
+    };
+
+    if (!this.initPromise && !this.store && !this.engine && !this.provider) {
+      return this.getStatus();
+    }
+
+    try {
+      await this.ensureInitialized();
+      await this.#recreateProviderSession();
+      return this.getStatus();
+    } catch (error) {
+      this.config = {
+        ...this.config,
+        provider: previousProvider,
+      };
+      try {
+        if (this.store || this.engine || this.provider) {
+          await this.#recreateProviderSession();
+        }
+      } catch {
+        // Best effort rollback only.
+      }
+      throw error;
+    }
   }
 
   async resetWebThread(): Promise<ConversationThreadPayload> {
@@ -555,6 +580,10 @@ export class BotRuntime {
     };
   }
 
+  getProviderOptions(): Record<string, unknown> {
+    return { ...asRecord(this.config.provider?.options) };
+  }
+
   async reloadCapabilities(nextDefinitions: unknown = null): Promise<BotRuntimeStatus> {
     await this.ensureInitialized();
     if (Array.isArray(nextDefinitions)) {
@@ -622,6 +651,8 @@ export class BotRuntime {
       runtimeName: this.name,
       getWorkspaceRoot: () => this.projectRoot,
       buildWebBotUrl: () => this.buildWebBotUrl(),
+      getProviderOptions: () => this.getProviderOptions(),
+      setProviderOptions: (options) => this.setProviderOptions(options),
       refreshProviderSession: (reason) => this.refreshProviderSession(reason),
       isKernelControlEnabled: () => this.isKernelControlEnabled(),
       executeKernelAction: (payload) => this.executeKernelAction(payload),
@@ -697,6 +728,45 @@ export class BotRuntime {
       throw new Error("Capability manager is not initialized.");
     }
     return this.capabilityManager;
+  }
+
+  #createProvider() {
+    return createAssistantProvider({
+      providerConfig: this.config.provider,
+      providerDefaults: this.providerDefaults,
+      workspaceRoot: this.projectRoot,
+      turnActivityTimeoutMs: this.turnActivityTimeoutMs,
+    });
+  }
+
+  #createConversationEngine(provider: ReturnType<typeof createAssistantProvider>) {
+    return new ConversationEngine({
+      store: this.#requireStore() as unknown as ConversationEngineInit["store"],
+      assistantProvider: provider as unknown as ConversationEngineInit["assistantProvider"],
+      projectRoot: this.projectRoot,
+      turnActivityTimeoutMs: this.turnActivityTimeoutMs,
+      maxMessages: this.maxMessages,
+      onApprovalRequested: (approval) => this.onApprovalRequested(approval),
+    });
+  }
+
+  async #recreateProviderSession(): Promise<void> {
+    await this.ensureInitialized();
+
+    const previousEngine = this.engine;
+    const previousProvider = this.provider;
+    this.engine = null;
+    this.provider = null;
+
+    if (previousEngine) {
+      await previousEngine.shutdown();
+    } else if (previousProvider) {
+      await previousProvider.shutdown();
+    }
+
+    this.provider = this.#createProvider();
+    this.engine = this.#createConversationEngine(this.provider);
+    await this.#requireStore().ensureThread(this.webThreadId);
   }
 }
 

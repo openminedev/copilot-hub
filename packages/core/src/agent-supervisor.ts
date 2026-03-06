@@ -1,4 +1,5 @@
 import { fork, type ChildProcess } from "node:child_process";
+import { mergeProviderOptions } from "./provider-options.js";
 
 const REQUEST_TIMEOUT_MS = 15000;
 const HEARTBEAT_TIMEOUT_MS = 4000;
@@ -115,6 +116,7 @@ export class AgentSupervisor {
   lastHeartbeatAt: string | null;
   lastHeartbeatError: string | null;
   statusCache: WorkerStatusBase;
+  expectedExitChildren: WeakSet<ChildProcess>;
 
   constructor({
     botConfig,
@@ -153,6 +155,7 @@ export class AgentSupervisor {
     this.recoveryPromise = null;
     this.lastHeartbeatAt = null;
     this.lastHeartbeatError = null;
+    this.expectedExitChildren = new WeakSet();
 
     this.statusCache = createInitialStatus(botConfig);
   }
@@ -204,6 +207,11 @@ export class AgentSupervisor {
     if (this.startingPromise) {
       await this.startingPromise;
       return;
+    }
+
+    if (this.restartTimer) {
+      clearTimeout(this.restartTimer);
+      this.restartTimer = null;
     }
 
     this.startingPromise = this.#spawnWorker();
@@ -275,26 +283,11 @@ export class AgentSupervisor {
       previousConfig?.provider && typeof previousConfig.provider === "object"
         ? previousConfig.provider
         : { kind: "codex", options: {} };
-    const mergedOptions = {
-      ...(previousProvider.options && typeof previousProvider.options === "object"
-        ? previousProvider.options
-        : {}),
-    };
-
-    if (typeof nextOptions?.sandboxMode === "string" && nextOptions.sandboxMode.trim()) {
-      mergedOptions.sandboxMode = nextOptions.sandboxMode.trim();
-    }
-    if (typeof nextOptions?.approvalPolicy === "string" && nextOptions.approvalPolicy.trim()) {
-      mergedOptions.approvalPolicy = nextOptions.approvalPolicy.trim();
-    }
-    if (Object.prototype.hasOwnProperty.call(nextOptions ?? {}, "model")) {
-      const normalizedModel = String(nextOptions?.model ?? "").trim();
-      if (normalizedModel) {
-        mergedOptions.model = normalizedModel;
-      } else {
-        delete mergedOptions.model;
-      }
-    }
+    const previousProviderOptions =
+      previousProvider.options && typeof previousProvider.options === "object"
+        ? { ...previousProvider.options }
+        : {};
+    const mergedOptions = mergeProviderOptions(previousProviderOptions, nextOptions);
 
     this.botConfig = {
       ...previousConfig,
@@ -306,23 +299,36 @@ export class AgentSupervisor {
     };
 
     try {
-      const status = await this.forceRestart("provider options updated");
+      let status: unknown;
+      if (this.child && this.child.connected) {
+        status = await this.request("setProviderOptions", mergedOptions);
+      } else if (this.desiredChannelsRunning) {
+        await this.ensureWorker();
+        status = await this.request("setProviderOptions", mergedOptions);
+      } else {
+        return this.getStatus();
+      }
       this.#updateStatus(status);
       return this.getStatus();
     } catch (error) {
+      this.botConfig = previousConfig;
+      try {
+        if (this.child && this.child.connected) {
+          const rollbackStatus = await this.request("setProviderOptions", previousProviderOptions);
+          this.#updateStatus(rollbackStatus);
+        } else if (this.desiredChannelsRunning) {
+          await this.forceRestart("provider options rollback");
+        }
+      } catch {
+        // Best effort rollback only.
+      }
+
       if (isWorkerReadyTimeoutError(error)) {
         const recoveredStatus = await waitForWorkerRecovery(this).catch(() => null);
         if (recoveredStatus) {
           this.#updateStatus(recoveredStatus);
           return this.getStatus();
         }
-      }
-
-      this.botConfig = previousConfig;
-      try {
-        await this.forceRestart("provider options rollback");
-      } catch {
-        // Best effort rollback only.
       }
       throw error;
     }
@@ -403,6 +409,7 @@ export class AgentSupervisor {
       const child = this.child;
       if (child && child.connected) {
         this.shutdownRequested = true;
+        this.expectedExitChildren.add(child);
         try {
           child.kill("SIGKILL");
         } catch {
@@ -451,6 +458,9 @@ export class AgentSupervisor {
     }
 
     const child = this.child;
+    if (child) {
+      this.expectedExitChildren.add(child);
+    }
     this.child = null;
     try {
       child?.kill("SIGTERM");
@@ -532,15 +542,15 @@ export class AgentSupervisor {
     });
 
     child.on("message", (message: unknown) => {
-      this.#handleWorkerMessage(message);
+      this.#handleWorkerMessage(child, message);
     });
 
     child.on("exit", (code: number | null, signal: NodeJS.Signals | null) => {
-      this.#handleWorkerExit({ code, signal });
+      this.#handleWorkerExit(child, { code, signal });
     });
 
     child.on("error", (error: Error) => {
-      this.#rejectAllPending(error);
+      this.#handleWorkerError(child, error);
     });
 
     await waitForWorkerReady(this, child);
@@ -552,7 +562,11 @@ export class AgentSupervisor {
     await this.refreshStatus();
   }
 
-  #handleWorkerMessage(message: unknown): void {
+  #handleWorkerMessage(child: ChildProcess, message: unknown): void {
+    if (child !== this.child) {
+      return;
+    }
+
     const record = asRecord(message);
     if (!record.type) {
       return;
@@ -649,16 +663,29 @@ export class AgentSupervisor {
     }
   }
 
-  #handleWorkerExit({
-    code,
-    signal,
-  }: {
-    code: number | null;
-    signal: NodeJS.Signals | null;
-  }): void {
-    if (this.child) {
-      this.child = null;
+  #handleWorkerError(child: ChildProcess, error: Error): void {
+    if (child !== this.child) {
+      return;
     }
+    this.#rejectAllPending(error);
+  }
+
+  #handleWorkerExit(
+    child: ChildProcess,
+    {
+      code,
+      signal,
+    }: {
+      code: number | null;
+      signal: NodeJS.Signals | null;
+    },
+  ): void {
+    const expectedExit = this.expectedExitChildren.delete(child);
+    if (child !== this.child) {
+      return;
+    }
+
+    this.child = null;
 
     this.#rejectAllPending(
       new Error(
@@ -667,7 +694,7 @@ export class AgentSupervisor {
     );
     this.#setOfflineStatus();
 
-    if (this.shutdownRequested) {
+    if (this.shutdownRequested || expectedExit) {
       return;
     }
 

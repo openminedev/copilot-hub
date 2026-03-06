@@ -63,6 +63,11 @@ type BotPolicyState = {
   approvalPolicy: "on-request" | "on-failure" | "never";
 };
 
+type RuntimeModelControl = {
+  getProviderOptions?: () => unknown;
+  setProviderOptions?: (payload: Record<string, unknown>) => Promise<unknown>;
+} | null;
+
 export function parseSetModelCommand(text: unknown, botIdPattern: RegExp): SetModelCommandResult {
   const tokens = String(text ?? "")
     .trim()
@@ -363,6 +368,56 @@ export async function applyBotModelPolicy({
     approvalPolicy: policyState.approvalPolicy,
     model,
   });
+}
+
+export function getRuntimeModel(runtime: RuntimeModelControl | undefined): string | null {
+  if (!runtime || typeof runtime.getProviderOptions !== "function") {
+    return null;
+  }
+
+  const options = runtime.getProviderOptions();
+  if (!isObject(options)) {
+    return null;
+  }
+
+  const model = String(options.model ?? "").trim();
+  return model || null;
+}
+
+export async function applyRuntimeModelPolicy({
+  runtime,
+  model,
+}: {
+  runtime: RuntimeModelControl | undefined;
+  model: string | null;
+}): Promise<void> {
+  if (!runtime || typeof runtime.setProviderOptions !== "function") {
+    throw new Error("Hub model update is not available on this runtime.");
+  }
+
+  await runtime.setProviderOptions({ model });
+}
+
+export function resolveSharedModel(
+  models: unknown,
+): { mode: "uniform"; model: string | null } | { mode: "mixed" } {
+  let normalizedModel: string | null | undefined;
+
+  for (const entry of Array.isArray(models) ? models : []) {
+    const nextModel = String(entry ?? "").trim() || null;
+    if (normalizedModel === undefined) {
+      normalizedModel = nextModel;
+      continue;
+    }
+    if (normalizedModel !== nextModel) {
+      return { mode: "mixed" };
+    }
+  }
+
+  return {
+    mode: "uniform",
+    model: normalizedModel ?? null,
+  };
 }
 
 export async function applyModelPolicyToBots({

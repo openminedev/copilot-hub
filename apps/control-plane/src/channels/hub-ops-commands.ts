@@ -2,14 +2,17 @@ import { randomBytes } from "node:crypto";
 import {
   applyBotModelPolicy,
   applyModelPolicyToBots,
+  applyRuntimeModelPolicy,
   buildSessionModelOptions,
   fetchCodexModelOptions,
   formatModelButtonText,
   formatModelLabel,
   getBotPolicyState,
+  getRuntimeModel,
   parseSetModelAllCommand,
   parseSetModelCommand,
   resolveModelSelectionFromAction,
+  resolveSharedModel,
 } from "./hub-model-utils.js";
 
 type SandboxMode = "read-only" | "workspace-write" | "danger-full-access";
@@ -75,6 +78,8 @@ type HubRuntimeInfo = {
   runtimeId?: string | null;
   runtimeName?: string | null;
   refreshProviderSession?: (reason?: string) => Promise<unknown>;
+  getProviderOptions?: () => unknown;
+  setProviderOptions?: (payload: Record<string, unknown>) => Promise<unknown>;
 };
 
 type MenuSession = {
@@ -448,7 +453,7 @@ export async function maybeHandleHubOpsCommand({
         .split(/\s+/)
         .filter(Boolean).length;
       if (tokenCount <= 1) {
-        await renderGlobalModelMenu(ctx, { editMessage: false });
+        await renderGlobalModelMenu(ctx, { editMessage: false, runtime: runtime ?? null });
         return true;
       }
 
@@ -459,28 +464,18 @@ export async function maybeHandleHubOpsCommand({
       }
 
       const bots = await fetchBots();
-      if (bots.length === 0) {
-        await ctx.reply("No agents found.");
+      const result = await applyGlobalModelSelection({
+        bots,
+        model: parsed.model,
+        runtime: runtime ?? null,
+      });
+      if (result.totalTargets === 0) {
+        await ctx.reply("No agents found and hub model control is unavailable.");
         return true;
       }
 
-      const result = await applyModelPolicyToBots({
-        apiPost,
-        bots,
-        model: parsed.model,
-      });
       const modelLabel = parsed.model ? parsed.model : "auto (workspace default)";
-      const lines = [
-        `Model updated for all agents: ${modelLabel}`,
-        `Updated: ${result.updatedBotIds.length}/${bots.length}`,
-      ];
-      if (result.failures.length > 0) {
-        const failedIds = result.failures.map((entry) => entry.botId).filter(Boolean);
-        lines.push(`Warnings: ${result.failures.length}`);
-        if (failedIds.length > 0) {
-          lines.push(`Failed: ${failedIds.join(", ")}`);
-        }
-      }
+      const lines = buildGlobalModelUpdateLines({ modelLabel, result });
       lines.push("Change applies on next message while preserving conversation history.");
       await ctx.reply(lines.join("\n"));
       return true;
@@ -704,7 +699,13 @@ async function handleCodexSwitchFlow({
   }
 }
 
-export async function maybeHandleHubOpsCallback({ ctx }: { ctx: HubOpsContext }): Promise<boolean> {
+export async function maybeHandleHubOpsCallback({
+  ctx,
+  runtime,
+}: {
+  ctx: HubOpsContext;
+  runtime?: HubRuntimeInfo | null;
+}): Promise<boolean> {
   const rawData = String(ctx.callbackQuery?.data ?? "").trim();
   if (!rawData.startsWith("hub:")) {
     return false;
@@ -753,6 +754,7 @@ export async function maybeHandleHubOpsCallback({ ctx }: { ctx: HubOpsContext })
       await renderGlobalModelMenu(ctx, {
         sessionId: action.sessionId,
         editMessage: true,
+        runtime: runtime ?? null,
       });
       await answerCallbackQuerySafe(ctx);
       return true;
@@ -780,6 +782,7 @@ export async function maybeHandleHubOpsCallback({ ctx }: { ctx: HubOpsContext })
         await renderGlobalModelMenu(ctx, {
           sessionId: action.sessionId,
           editMessage: true,
+          runtime: runtime ?? null,
           notice: "Model options expired. Open /set_model_all again.",
         });
         await answerCallbackQuerySafe(ctx, "Model menu expired");
@@ -787,33 +790,32 @@ export async function maybeHandleHubOpsCallback({ ctx }: { ctx: HubOpsContext })
       }
 
       const bots = await fetchBots();
-      if (bots.length === 0) {
-        await renderBotsMenu(ctx, { editMessage: true, notice: "No agents found." });
-        await answerCallbackQuerySafe(ctx, "No agents");
+      const result = await applyGlobalModelSelection({
+        bots,
+        model: selection.model,
+        runtime: runtime ?? null,
+      });
+      if (result.totalTargets === 0) {
+        await renderGlobalModelMenu(ctx, {
+          sessionId: action.sessionId,
+          editMessage: true,
+          runtime: runtime ?? null,
+          notice: "No agents found and hub model control is unavailable.",
+        });
+        await answerCallbackQuerySafe(ctx, "No targets");
         return true;
       }
 
-      const result = await applyModelPolicyToBots({
-        apiPost,
-        bots,
-        model: selection.model,
+      const lines = buildGlobalModelUpdateLines({
+        modelLabel: selection.label,
+        result,
       });
-      const lines = [
-        `Model updated for all agents: ${selection.label}`,
-        `Updated: ${result.updatedBotIds.length}/${bots.length}`,
-      ];
-      if (result.failures.length > 0) {
-        const failedIds = result.failures.map((entry) => entry.botId).filter(Boolean);
-        lines.push(`Warnings: ${result.failures.length}`);
-        if (failedIds.length > 0) {
-          lines.push(`Failed: ${failedIds.join(", ")}`);
-        }
-      }
       lines.push("Change applies on next message while preserving conversation history.");
 
       await renderGlobalModelMenu(ctx, {
         sessionId: action.sessionId,
         editMessage: true,
+        runtime: runtime ?? null,
         notice: lines.join("\n"),
       });
       await answerCallbackQuerySafe(ctx, "Model updated");
@@ -1023,7 +1025,7 @@ function buildHelpText(runtimeName: string | null | undefined): string {
     "All agent actions start from that agent workspace.",
     "Model changes apply on next message and keep conversation history.",
     "/set_model opens a clickable agent->model flow.",
-    "/set_model_all opens a clickable model list for all agents.",
+    "/set_model_all opens a clickable model list for all agents and the hub.",
     "",
     "For development tasks, send a normal message to the assistant.",
   ].join("\n");
@@ -1247,11 +1249,18 @@ async function renderGlobalModelMenu(
   {
     sessionId = "",
     editMessage = false,
+    runtime = null,
     notice = "",
-  }: { sessionId?: string; editMessage?: boolean; notice?: string } = {},
+  }: {
+    sessionId?: string;
+    editMessage?: boolean;
+    runtime?: HubRuntimeInfo | null;
+    notice?: string;
+  } = {},
 ): Promise<void> {
   const bots = await fetchBots();
-  if (bots.length === 0) {
+  const hubIncluded = isHubModelControlAvailable(runtime);
+  if (bots.length === 0 && !hubIncluded) {
     await renderBotsMenu(ctx, {
       editMessage,
       notice: notice || "No agents found.",
@@ -1270,7 +1279,7 @@ async function renderGlobalModelMenu(
     return;
   }
 
-  const sharedModel = resolveSharedModelForBots(bots);
+  const sharedModel = resolveSharedModelForGlobalTargets(bots, runtime);
   const modelCatalog = await fetchCodexModelOptions(apiGet);
   const currentModel = sharedModel.mode === "uniform" ? (sharedModel.model ?? "") : "__mixed__";
   const modelOptions = buildSessionModelOptions({
@@ -1284,13 +1293,18 @@ async function renderGlobalModelMenu(
   if (notice) {
     lines.push(notice, "");
   }
-  lines.push("Global model for all agents:");
+  lines.push(hubIncluded ? "Global model for all agents and hub:" : "Global model for all agents:");
   lines.push(`agents: ${bots.length}`);
+  if (hubIncluded) {
+    lines.push("hub: included");
+  }
   lines.push(
     `current: ${
       sharedModel.mode === "uniform"
         ? formatModelLabel(sharedModel.model)
-        : "mixed (agents use different models)"
+        : hubIncluded
+          ? "mixed (agents and hub use different models)"
+          : "mixed (agents use different models)"
     }`,
   );
   lines.push(
@@ -1788,27 +1802,98 @@ function parseMenuAction(rawData: string): HubOpsMenuAction | null {
   return null;
 }
 
-function resolveSharedModelForBots(
-  bots: BotState[],
-): { mode: "uniform"; model: string | null } | { mode: "mixed" } {
-  let normalizedModel: string | null | undefined;
+type GlobalModelApplyResult = {
+  updatedCount: number;
+  totalTargets: number;
+  botFailures: Array<{ botId: string; error: string }>;
+  hubIncluded: boolean;
+  hubError: string | null;
+};
 
-  for (const bot of bots) {
-    const rawModel = bot?.provider?.options?.model;
-    const nextModel = String(rawModel ?? "").trim() || null;
-    if (normalizedModel === undefined) {
-      normalizedModel = nextModel;
-      continue;
-    }
-    if (normalizedModel !== nextModel) {
-      return { mode: "mixed" };
+function isHubModelControlAvailable(runtime?: HubRuntimeInfo | null): boolean {
+  return Boolean(runtime && typeof runtime.setProviderOptions === "function");
+}
+
+function resolveSharedModelForGlobalTargets(
+  bots: BotState[],
+  runtime?: HubRuntimeInfo | null,
+): { mode: "uniform"; model: string | null } | { mode: "mixed" } {
+  const models = bots.map((bot) => bot?.provider?.options?.model);
+  if (runtime && typeof runtime.getProviderOptions === "function") {
+    models.push(getRuntimeModel(runtime));
+  }
+  return resolveSharedModel(models);
+}
+
+async function applyGlobalModelSelection({
+  bots,
+  model,
+  runtime,
+}: {
+  bots: BotState[];
+  model: string | null;
+  runtime?: HubRuntimeInfo | null;
+}): Promise<GlobalModelApplyResult> {
+  const hubIncluded = isHubModelControlAvailable(runtime);
+  const botResult = await applyModelPolicyToBots({
+    apiPost,
+    bots,
+    model,
+  });
+
+  let hubError: string | null = null;
+  let hubUpdated = false;
+  if (hubIncluded) {
+    try {
+      await applyRuntimeModelPolicy({
+        runtime,
+        model,
+      });
+      hubUpdated = true;
+    } catch (error) {
+      hubError = sanitizeError(error);
     }
   }
 
   return {
-    mode: "uniform",
-    model: normalizedModel ?? null,
+    updatedCount: botResult.updatedBotIds.length + (hubUpdated ? 1 : 0),
+    totalTargets: bots.length + (hubIncluded ? 1 : 0),
+    botFailures: botResult.failures,
+    hubIncluded,
+    hubError,
   };
+}
+
+function buildGlobalModelUpdateLines({
+  modelLabel,
+  result,
+}: {
+  modelLabel: string;
+  result: GlobalModelApplyResult;
+}): string[] {
+  const lines = [
+    result.hubIncluded
+      ? `Model updated for all agents and hub: ${modelLabel}`
+      : `Model updated for all agents: ${modelLabel}`,
+    `Updated: ${result.updatedCount}/${result.totalTargets}`,
+  ];
+
+  if (result.botFailures.length > 0 || result.hubError) {
+    lines.push(`Warnings: ${result.botFailures.length + (result.hubError ? 1 : 0)}`);
+  }
+
+  if (result.botFailures.length > 0) {
+    const failedIds = result.botFailures.map((entry) => entry.botId).filter(Boolean);
+    if (failedIds.length > 0) {
+      lines.push(`Failed agents: ${failedIds.join(", ")}`);
+    }
+  }
+
+  if (result.hubError) {
+    lines.push(`Hub warning: ${result.hubError}`);
+  }
+
+  return lines;
 }
 
 function parseMenuIndex(value: string | undefined): number | null {

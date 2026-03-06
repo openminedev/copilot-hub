@@ -112,7 +112,10 @@ test("policy resolvers keep safe defaults", async () => {
   const {
     applyBotModelPolicy,
     applyModelPolicyToBots,
+    applyRuntimeModelPolicy,
+    getRuntimeModel,
     getBotPolicyState,
+    resolveSharedModel,
     resolveApprovalPolicy,
     resolveSandboxMode,
   } = await loadUtils();
@@ -197,4 +200,34 @@ test("policy resolvers keep safe defaults", async () => {
   assert.equal(batchResult.failures.length, 1);
   assert.equal(batchResult.failures[0].botId, "worker-b");
   assert.equal(posted.length, 2);
+
+  assert.equal(
+    getRuntimeModel({
+      getProviderOptions: () => ({
+        model: "gpt-5",
+      }),
+    }),
+    "gpt-5",
+  );
+
+  let runtimePayload: unknown = null;
+  await applyRuntimeModelPolicy({
+    runtime: {
+      setProviderOptions: async (payload: Record<string, unknown>) => {
+        runtimePayload = payload;
+      },
+    },
+    model: null,
+  });
+  assert.deepEqual(runtimePayload, {
+    model: null,
+  });
+
+  assert.deepEqual(resolveSharedModel(["gpt-5", "gpt-5", "gpt-5"]), {
+    mode: "uniform",
+    model: "gpt-5",
+  });
+  assert.deepEqual(resolveSharedModel(["gpt-5", null]), {
+    mode: "mixed",
+  });
 });

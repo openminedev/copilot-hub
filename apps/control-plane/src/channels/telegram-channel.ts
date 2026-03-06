@@ -378,6 +378,7 @@ export class TelegramChannel {
 
       const hubHandled = await maybeHandleHubOpsCallback({
         ctx: context as unknown as Parameters<typeof maybeHandleHubOpsCallback>[0]["ctx"],
+        runtime: this.runtime,
       });
       if (hubHandled) {
         return;
