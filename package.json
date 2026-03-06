@@ -48,7 +48,8 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build:scripts && npm run build --workspaces --if-present",
+    "build": "npm run build:scripts && npm run build:workspaces",
+    "build:workspaces": "npm run build --workspace @copilot-hub/contracts --if-present && npm run build --workspace @copilot-hub/core --if-present && npm run build --workspace @copilot-hub/agent-engine --if-present && npm run build --workspace @copilot-hub/control-plane --if-present",
     "build:scripts": "tsc -p scripts/tsconfig.json",
     "prepare:shared": "npm run build:scripts --silent && node scripts/dist/ensure-shared-build.mjs",
     "start": "npm run build:scripts --silent && node scripts/dist/cli.mjs start",
