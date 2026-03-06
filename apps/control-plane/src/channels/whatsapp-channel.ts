@@ -1,6 +1,23 @@
-// @ts-nocheck
+type ChannelConfig = {
+  id?: unknown;
+} & Record<string, unknown>;
+
+type ChannelStatus = {
+  kind: "whatsapp";
+  id: string;
+  running: boolean;
+  error: string | null;
+};
+
 export class WhatsAppChannel {
-  constructor({ channelConfig, runtime }) {
+  kind: "whatsapp";
+  id: string;
+  config: ChannelConfig;
+  runtime: unknown;
+  running: boolean;
+  error: string | null;
+
+  constructor({ channelConfig, runtime }: { channelConfig: ChannelConfig; runtime: unknown }) {
     this.kind = "whatsapp";
     this.id = String(channelConfig.id ?? "whatsapp");
     this.config = channelConfig;
@@ -9,27 +26,27 @@ export class WhatsAppChannel {
     this.error = null;
   }
 
-  async start() {
+  async start(): Promise<ChannelStatus> {
     this.running = false;
     this.error =
       "WhatsApp adapter is declared but not wired yet. Provide implementation in src/channels/whatsapp-channel.js.";
     return this.getStatus();
   }
 
-  async stop() {
+  async stop(): Promise<ChannelStatus> {
     this.running = false;
     return this.getStatus();
   }
 
-  async shutdown() {
+  async shutdown(): Promise<void> {
     await this.stop();
   }
 
-  async notifyApproval() {
+  async notifyApproval(): Promise<void> {
     return;
   }
 
-  getStatus() {
+  getStatus(): ChannelStatus {
     return {
       kind: this.kind,
       id: this.id,

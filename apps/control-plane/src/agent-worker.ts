@@ -1,6 +1,13 @@
-// @ts-nocheck
 import { BotRuntime } from "@copilot-hub/core/bot-runtime";
 import { createChannelAdapter } from "./channels/channel-factory.js";
+
+type UnknownRecord = Record<string, unknown>;
+
+type PendingKernelRequest = {
+  resolve: (value: unknown) => void;
+  reject: (error: Error) => void;
+  timer: NodeJS.Timeout;
+};
 
 const rawBotConfig = String(process.env.AGENT_BOT_CONFIG_JSON ?? "").trim();
 const rawProviderDefaults = String(process.env.AGENT_PROVIDER_DEFAULTS_JSON ?? "").trim();
@@ -25,7 +32,7 @@ const botConfig = JSON.parse(rawBotConfig);
 const providerDefaults = rawProviderDefaults ? JSON.parse(rawProviderDefaults) : {};
 
 let nextKernelRequestId = 1;
-const pendingKernelRequests = new Map();
+const pendingKernelRequests = new Map<string, PendingKernelRequest>();
 
 const runtime = new BotRuntime({
   botConfig,
@@ -33,13 +40,14 @@ const runtime = new BotRuntime({
   turnActivityTimeoutMs,
   maxMessages,
   kernelControl: {
-    request: (payload) => requestKernelAction(payload),
+    request: (payload: { action: unknown; payload?: unknown; context?: unknown }) =>
+      requestKernelAction(payload),
   },
-  channelAdapterFactory: createChannelAdapter,
-});
+  channelAdapterFactory: createChannelAdapter as any,
+} as any);
 runtime.setWebPublicBaseUrl(initialWebPublicBaseUrl);
 
-process.on("message", (message) => {
+process.on("message", (message: unknown) => {
   void handleInboundMessage(message);
 });
 
@@ -70,10 +78,11 @@ sendEvent("workerReady", {
   name: runtime.name,
 });
 
-async function handleInboundMessage(message) {
-  const type = String(message?.type ?? "request").trim();
+async function handleInboundMessage(message: unknown): Promise<void> {
+  const record = asRecord(message);
+  const type = String(record.type ?? "request").trim();
   if (type === "kernelResponse") {
-    handleKernelResponse(message);
+    handleKernelResponse(record);
     return;
   }
   if (type !== "request") {
@@ -81,9 +90,9 @@ async function handleInboundMessage(message) {
   }
 
   try {
-    await handleWorkerRequest(message);
+    await handleWorkerRequest(record);
   } catch (error) {
-    const requestId = message?.requestId ?? null;
+    const requestId = record.requestId ?? null;
     if (requestId !== null && requestId !== undefined) {
       sendResponse({
         requestId,
@@ -96,10 +105,10 @@ async function handleInboundMessage(message) {
   }
 }
 
-async function handleWorkerRequest(message) {
-  const requestId = message?.requestId;
-  const action = String(message?.action ?? "").trim();
-  const payload = message?.payload ?? {};
+async function handleWorkerRequest(message: UnknownRecord): Promise<void> {
+  const requestId = message.requestId;
+  const action = String(message.action ?? "").trim();
+  const payload = asRecord(message.payload);
 
   if (!requestId) {
     throw new Error("requestId is required.");
@@ -108,7 +117,7 @@ async function handleWorkerRequest(message) {
     throw new Error("action is required.");
   }
 
-  let result;
+  let result: unknown;
   switch (action) {
     case "getStatus": {
       result = runtime.getStatus();
@@ -127,27 +136,27 @@ async function handleWorkerRequest(message) {
       break;
     }
     case "listPendingApprovals": {
-      const threadId = payload?.threadId ? String(payload.threadId) : undefined;
+      const threadId = payload.threadId ? String(payload.threadId) : undefined;
       result = await runtime.listPendingApprovals(threadId);
       break;
     }
     case "resolvePendingApproval": {
       result = await runtime.resolvePendingApproval({
-        threadId: String(payload?.threadId ?? ""),
-        approvalId: String(payload?.approvalId ?? ""),
-        decision: String(payload?.decision ?? ""),
+        threadId: String(payload.threadId ?? ""),
+        approvalId: String(payload.approvalId ?? ""),
+        decision: String(payload.decision ?? ""),
       });
       break;
     }
     case "reloadCapabilities": {
-      const capabilityDefinitions = Array.isArray(payload?.capabilityDefinitions)
+      const capabilityDefinitions = Array.isArray(payload.capabilityDefinitions)
         ? payload.capabilityDefinitions
         : null;
-      result = await runtime.reloadCapabilities(capabilityDefinitions);
+      result = await runtime.reloadCapabilities(capabilityDefinitions as any);
       break;
     }
     case "setProjectRoot": {
-      const projectRoot = String(payload?.projectRoot ?? "").trim();
+      const projectRoot = String(payload.projectRoot ?? "").trim();
       if (!projectRoot) {
         throw new Error("projectRoot is required.");
       }
@@ -156,7 +165,7 @@ async function handleWorkerRequest(message) {
       break;
     }
     case "setWebPublicBaseUrl": {
-      const value = String(payload?.webPublicBaseUrl ?? "").trim();
+      const value = String(payload.webPublicBaseUrl ?? "").trim();
       if (!value) {
         throw new Error("webPublicBaseUrl is required.");
       }
@@ -179,7 +188,7 @@ async function handleWorkerRequest(message) {
   sendResponse({ requestId, ok: true, result });
 }
 
-async function gracefulShutdown(exitCode) {
+async function gracefulShutdown(exitCode: number): Promise<void> {
   try {
     await runtime.shutdown();
   } catch {
@@ -194,7 +203,7 @@ async function gracefulShutdown(exitCode) {
   process.exit(exitCode);
 }
 
-function sendResponse(value) {
+function sendResponse(value: UnknownRecord): void {
   if (!process.send) {
     return;
   }
@@ -204,7 +213,7 @@ function sendResponse(value) {
   });
 }
 
-function sendEvent(event, payload) {
+function sendEvent(event: string, payload: UnknownRecord): void {
   if (!process.send) {
     return;
   }
@@ -215,7 +224,15 @@ function sendEvent(event, payload) {
   });
 }
 
-function requestKernelAction({ action, payload, context }) {
+function requestKernelAction({
+  action,
+  payload,
+  context,
+}: {
+  action: unknown;
+  payload?: unknown;
+  context?: unknown;
+}): Promise<unknown> {
   if (!process.send) {
     return Promise.reject(new Error("Kernel IPC is unavailable."));
   }
@@ -227,6 +244,12 @@ function requestKernelAction({ action, payload, context }) {
       : 20000;
 
   return new Promise((resolve, reject) => {
+    const send = process.send;
+    if (!send) {
+      reject(new Error("Kernel IPC is unavailable."));
+      return;
+    }
+
     const timer = setTimeout(() => {
       pendingKernelRequests.delete(requestId);
       reject(new Error(`Kernel request '${String(action ?? "")}' timed out after ${timeoutMs}ms.`));
@@ -239,7 +262,7 @@ function requestKernelAction({ action, payload, context }) {
     });
 
     try {
-      process.send({
+      send({
         type: "kernelRequest",
         requestId,
         action,
@@ -249,13 +272,13 @@ function requestKernelAction({ action, payload, context }) {
     } catch (error) {
       clearTimeout(timer);
       pendingKernelRequests.delete(requestId);
-      reject(error);
+      reject(error as Error);
     }
   });
 }
 
-function handleKernelResponse(message) {
-  const requestId = String(message?.requestId ?? "").trim();
+function handleKernelResponse(message: UnknownRecord): void {
+  const requestId = String(message.requestId ?? "").trim();
   if (!requestId) {
     return;
   }
@@ -265,14 +288,18 @@ function handleKernelResponse(message) {
   }
   pendingKernelRequests.delete(requestId);
   clearTimeout(pending.timer);
-  if (message?.ok) {
+  if (message.ok) {
     pending.resolve(message.result);
     return;
   }
-  pending.reject(new Error(String(message?.error ?? "Unknown kernel response error.")));
+  pending.reject(new Error(String(message.error ?? "Unknown kernel response error.")));
 }
 
-function sanitizeError(error) {
+function sanitizeError(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error);
   return raw.split(/\r?\n/).slice(0, 12).join("\n");
+}
+
+function asRecord(value: unknown): UnknownRecord {
+  return value && typeof value === "object" ? (value as UnknownRecord) : {};
 }

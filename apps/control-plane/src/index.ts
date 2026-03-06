@@ -1,7 +1,8 @@
-// @ts-nocheck
 import path from "node:path";
+import type { Server } from "node:http";
 import { fileURLToPath } from "node:url";
 import express from "express";
+import type { Express, NextFunction, Request, Response } from "express";
 import { BotManager } from "@copilot-hub/core/bot-manager";
 import { loadBotRegistry } from "@copilot-hub/core/bot-registry";
 import { config } from "./config.js";
@@ -14,11 +15,11 @@ let activeWebPort = config.webPort;
 let runtimeWebPublicBaseUrl = config.webPublicBaseUrl;
 
 let shuttingDown = false;
-let server = null;
-let botManager = null;
-let instanceLock = null;
-let controlPlane = null;
-let secretStore = null;
+let server: Server | null = null;
+let botManager: BotManager | null = null;
+let instanceLock: InstanceLock | null = null;
+let controlPlane: KernelControlPlane | null = null;
+let secretStore: KernelSecretStore | null = null;
 const workerScriptPath = fileURLToPath(new URL("./agent-worker.js", import.meta.url));
 
 await bootstrap();
@@ -30,8 +31,9 @@ async function bootstrap() {
       await instanceLock.acquire();
     }
 
-    secretStore = new KernelSecretStore(config.secretStoreFilePath);
-    await secretStore.init();
+    const localSecretStore = new KernelSecretStore(config.secretStoreFilePath);
+    await localSecretStore.init();
+    secretStore = localSecretStore;
 
     const registry = await loadBotRegistry({
       filePath: config.botRegistryFilePath,
@@ -43,7 +45,7 @@ async function bootstrap() {
       bootstrapTelegramToken: config.bootstrapTelegramToken,
       defaultProviderKind: config.defaultProviderKind,
       workspacePolicy: config.workspacePolicy,
-      resolveSecret: (name) => secretStore.getSecret(name),
+      resolveSecret: (name: string) => localSecretStore.getSecret(name),
     });
 
     const runtimeBots = registry.bots.filter(
@@ -55,7 +57,7 @@ async function bootstrap() {
       );
     }
 
-    botManager = new BotManager({
+    const localBotManager = new BotManager({
       botDefinitions: runtimeBots,
       providerDefaults: config.providerDefaults,
       turnActivityTimeoutMs: config.turnActivityTimeoutMs,
@@ -67,12 +69,13 @@ async function bootstrap() {
       heartbeatEnabled: config.agentHeartbeatEnabled,
       heartbeatIntervalMs: config.agentHeartbeatIntervalMs,
       heartbeatTimeoutMs: config.agentHeartbeatTimeoutMs,
-    });
+    } as any);
+    botManager = localBotManager;
 
-    controlPlane = new KernelControlPlane({
-      botManager,
+    const localControlPlane = new KernelControlPlane({
+      botManager: localBotManager,
       registryFilePath: registry.filePath,
-      secretStore,
+      secretStore: localSecretStore,
       registryLoadOptions: {
         dataDir: config.dataDir,
         defaultWorkspaceRoot: config.defaultWorkspaceRoot,
@@ -82,14 +85,17 @@ async function bootstrap() {
         bootstrapTelegramToken: config.bootstrapTelegramToken,
         defaultProviderKind: config.defaultProviderKind,
         workspacePolicy: config.workspacePolicy,
-        resolveSecret: (name) => secretStore.getSecret(name),
+        resolveSecret: (name: string) => localSecretStore.getSecret(name),
       },
-    });
-    botManager.setKernelActionHandler((request) => controlPlane.handleAgentAction(request));
+    } as any);
+    controlPlane = localControlPlane;
+    localBotManager.setKernelActionHandler((request: unknown) =>
+      localControlPlane.handleAgentAction(request as any),
+    );
 
     const app = buildApiApp({
-      botManager,
-      controlPlane,
+      botManager: localBotManager,
+      controlPlane: localControlPlane,
       registryFilePath: registry.filePath,
     });
 
@@ -108,9 +114,9 @@ async function bootstrap() {
       host: config.webHost,
       port: activeWebPort,
     });
-    botManager.setWebPublicBaseUrl(runtimeWebPublicBaseUrl);
+    localBotManager.setWebPublicBaseUrl(runtimeWebPublicBaseUrl);
 
-    await botManager.startAutoBots();
+    await localBotManager.startAutoBots();
     registerSignals();
 
     console.log(`HTTP API listening on http://${config.webHost}:${activeWebPort}`);
@@ -126,7 +132,15 @@ async function bootstrap() {
   }
 }
 
-function buildApiApp({ botManager, controlPlane, registryFilePath }) {
+function buildApiApp({
+  botManager,
+  controlPlane,
+  registryFilePath,
+}: {
+  botManager: BotManager;
+  controlPlane: KernelControlPlane;
+  registryFilePath: string;
+}) {
   const app = express();
   app.use(express.json({ limit: "1mb" }));
   app.use((req, res, next) => {
@@ -212,6 +226,9 @@ function buildApiApp({ botManager, controlPlane, registryFilePath }) {
       const approvalPolicy = String(req.body?.approvalPolicy ?? "")
         .trim()
         .toLowerCase();
+      const hasModel = Object.prototype.hasOwnProperty.call(req.body ?? {}, "model");
+      const rawModel = req.body?.model;
+      const model = rawModel === null || rawModel === undefined ? null : String(rawModel).trim();
       if (!sandboxMode) {
         res.status(400).json({ error: "Field 'sandboxMode' is required." });
         return;
@@ -221,11 +238,21 @@ function buildApiApp({ botManager, controlPlane, registryFilePath }) {
         return;
       }
 
-      const result = await controlPlane.runSystemAction(CONTROL_ACTIONS.BOTS_SET_POLICY, {
+      const payload: {
+        botId: string;
+        sandboxMode: string;
+        approvalPolicy: string;
+        model?: string | null;
+      } = {
         botId,
         sandboxMode,
         approvalPolicy,
-      });
+      };
+      if (hasModel) {
+        payload.model = model;
+      }
+
+      const result = await controlPlane.runSystemAction(CONTROL_ACTIONS.BOTS_SET_POLICY, payload);
       res.json(result);
     }),
   );
@@ -345,7 +372,7 @@ function buildApiApp({ botManager, controlPlane, registryFilePath }) {
     }),
   );
 
-  app.use((error, req, res, _next) => {
+  app.use((error: unknown, req: Request, res: Response, _next: NextFunction) => {
     const message = sanitizeError(error);
     res.status(400).json({ error: message });
   });
@@ -362,13 +389,25 @@ function registerSignals() {
   });
 }
 
-function wrapAsync(handler) {
-  return (req, res, next) => {
+function wrapAsync(
+  handler: (req: Request, res: Response, next: NextFunction) => Promise<unknown> | unknown,
+) {
+  return (req: Request, res: Response, next: NextFunction) => {
     Promise.resolve(handler(req, res, next)).catch(next);
   };
 }
 
-function resolveRuntimeWebPublicBaseUrl({ explicit, configuredBaseUrl, host, port }) {
+function resolveRuntimeWebPublicBaseUrl({
+  explicit,
+  configuredBaseUrl,
+  host,
+  port,
+}: {
+  explicit: boolean;
+  configuredBaseUrl: string;
+  host: string;
+  port: number;
+}) {
   if (explicit) {
     return configuredBaseUrl;
   }
@@ -377,14 +416,26 @@ function resolveRuntimeWebPublicBaseUrl({ explicit, configuredBaseUrl, host, por
   return `http://${exposedHost}:${port}`;
 }
 
-async function startWebServer({ app, host, basePort, autoIncrement, maxAttempts }) {
+async function startWebServer({
+  app,
+  host,
+  basePort,
+  autoIncrement,
+  maxAttempts,
+}: {
+  app: Express;
+  host: string;
+  basePort: number;
+  autoIncrement: boolean;
+  maxAttempts: number;
+}) {
   let port = basePort;
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     try {
       const startedServer = await listenOnce({ app, host, port });
       return { server: startedServer, port };
     } catch (error) {
-      const occupied = error && typeof error === "object" && error.code === "EADDRINUSE";
+      const occupied = isAddressInUseError(error);
       if (!occupied || !autoIncrement || port >= 65535) {
         throw error;
       }
@@ -397,15 +448,23 @@ async function startWebServer({ app, host, basePort, autoIncrement, maxAttempts 
   );
 }
 
-function listenOnce({ app, host, port }) {
-  return new Promise((resolve, reject) => {
+function listenOnce({
+  app,
+  host,
+  port,
+}: {
+  app: Express;
+  host: string;
+  port: number;
+}): Promise<Server> {
+  return new Promise<Server>((resolve, reject) => {
     const candidate = app.listen(port, host);
     candidate.once("listening", () => resolve(candidate));
-    candidate.once("error", (error) => reject(error));
+    candidate.once("error", (error: unknown) => reject(error));
   });
 }
 
-async function shutdown(exitCode) {
+async function shutdown(exitCode: number) {
   if (shuttingDown) {
     return;
   }
@@ -420,8 +479,9 @@ async function cleanupBeforeExit() {
     await botManager.shutdownAll();
   }
   if (server) {
-    await new Promise((resolve) => {
-      server.close(() => resolve());
+    const activeServer = server;
+    await new Promise<void>((resolve) => {
+      activeServer.close(() => resolve());
     });
   }
   if (instanceLock) {
@@ -429,17 +489,27 @@ async function cleanupBeforeExit() {
   }
 }
 
-function sanitizeError(error) {
+function sanitizeError(error: unknown) {
   const raw = error instanceof Error ? error.message : String(error);
   return raw.split(/\r?\n/).slice(0, 12).join("\n");
 }
 
-function parseDeleteModeFromRequest(body) {
-  const value = String(body?.deleteMode ?? "")
+function parseDeleteModeFromRequest(body: unknown) {
+  const payload: Record<string, unknown> =
+    body && typeof body === "object" ? (body as Record<string, unknown>) : {};
+  const value = String(payload.deleteMode ?? "")
     .trim()
     .toLowerCase();
   if (value === "soft" || value === "purge_data" || value === "purge_all") {
     return value;
   }
   return "soft";
+}
+
+function isAddressInUseError(error: unknown): boolean {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+  const code = (error as { code?: unknown }).code;
+  return code === "EADDRINUSE";
 }

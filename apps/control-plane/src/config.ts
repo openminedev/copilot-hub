@@ -1,4 +1,3 @@
-// @ts-nocheck
 import fs from "node:fs";
 import path from "node:path";
 import dotenv from "dotenv";
@@ -14,6 +13,11 @@ import {
 } from "@copilot-hub/core/workspace-paths";
 
 dotenv.config();
+
+type ThreadMode = "single" | "per_chat";
+type CodexSandbox = "read-only" | "workspace-write" | "danger-full-access";
+type ApprovalPolicy = "untrusted" | "on-failure" | "on-request" | "never";
+type ProviderKind = "codex";
 
 const kernelRootPath = getKernelRootPath();
 const configuredDefaultWorkspaceRoot = String(process.env.DEFAULT_WORKSPACE_ROOT ?? "").trim();
@@ -177,8 +181,8 @@ export const config = {
   defaultAllowedChatIds,
 };
 
-function resolveCodexBin(rawValue) {
-  const value = (rawValue ?? "").trim();
+function resolveCodexBin(rawValue: string | undefined): string {
+  const value = String(rawValue ?? "").trim();
   const normalized = value.toLowerCase();
 
   if (value && normalized !== "codex") {
@@ -195,7 +199,7 @@ function resolveCodexBin(rawValue) {
   return value || "codex";
 }
 
-function findVscodeCodexExe() {
+function findVscodeCodexExe(): string | null {
   const userProfile = process.env.USERPROFILE;
   if (!userProfile) {
     return null;
@@ -224,7 +228,7 @@ function findVscodeCodexExe() {
   return null;
 }
 
-function normalizeThreadMode(value) {
+function normalizeThreadMode(value: unknown): ThreadMode {
   const mode = String(value ?? "single")
     .trim()
     .toLowerCase();
@@ -234,7 +238,7 @@ function normalizeThreadMode(value) {
   throw new Error("THREAD_MODE must be either 'single' or 'per_chat'.");
 }
 
-function parseBoolean(value) {
+function parseBoolean(value: unknown): boolean {
   const normalized = String(value ?? "")
     .trim()
     .toLowerCase();
@@ -247,7 +251,7 @@ function parseBoolean(value) {
   throw new Error("Invalid boolean value in environment.");
 }
 
-function resolveOptionalPath(value) {
+function resolveOptionalPath(value: unknown): string | null {
   const raw = String(value ?? "").trim();
   if (!raw) {
     return null;
@@ -255,7 +259,7 @@ function resolveOptionalPath(value) {
   return path.resolve(raw);
 }
 
-function normalizeCodexSandbox(value) {
+function normalizeCodexSandbox(value: unknown): CodexSandbox {
   const mode = String(value ?? "")
     .trim()
     .toLowerCase();
@@ -265,7 +269,7 @@ function normalizeCodexSandbox(value) {
   throw new Error("CODEX_SANDBOX must be one of: read-only, workspace-write, danger-full-access.");
 }
 
-function normalizeApprovalPolicy(value) {
+function normalizeApprovalPolicy(value: unknown): ApprovalPolicy {
   const mode = String(value ?? "")
     .trim()
     .toLowerCase();
@@ -277,7 +281,7 @@ function normalizeApprovalPolicy(value) {
   );
 }
 
-function normalizeProviderKind(value) {
+function normalizeProviderKind(value: unknown): ProviderKind {
   const kind = String(value ?? "")
     .trim()
     .toLowerCase();
@@ -290,7 +294,7 @@ function normalizeProviderKind(value) {
   throw new Error("DEFAULT_PROVIDER_KIND must currently be 'codex'.");
 }
 
-function resolveWorkspaceRoot(value) {
+function resolveWorkspaceRoot(value: unknown): string {
   const raw = String(value ?? "").trim();
   if (!raw) {
     throw new Error("DEFAULT_WORKSPACE_ROOT must not be empty.");

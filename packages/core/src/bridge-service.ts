@@ -1,9 +1,104 @@
-// @ts-nocheck
 import { normalizeThreadId } from "./thread-id.js";
 
 const DEFAULT_MAX_MESSAGES = 200;
 
+type MessageSource = "web" | "telegram" | "internal";
+
+type BridgeMessage = {
+  role: "user" | "assistant";
+  source: MessageSource;
+  text: string;
+};
+
+type BridgeThread = {
+  sessionId?: string | null;
+  turnCount?: number;
+  lastMode?: string;
+  messages?: BridgeMessage[];
+} & Record<string, unknown>;
+
+type BridgeStore = {
+  getThread: (threadId: string) => Promise<BridgeThread | null>;
+  ensureThread: (threadId: string) => Promise<BridgeThread>;
+  appendMessage: (
+    threadId: string,
+    message: BridgeMessage,
+    maxMessages: number,
+  ) => Promise<unknown>;
+  upsertThread: (
+    threadId: string,
+    updater: (current: BridgeThread) => BridgeThread,
+  ) => Promise<BridgeThread>;
+  listMessages: (threadId: string, limit?: number) => Promise<unknown[]>;
+  resetThread: (threadId: string) => Promise<BridgeThread>;
+  findThreadIdBySessionId: (sessionId: string) => Promise<string | null>;
+};
+
+type AssistantTurnResult = {
+  sessionId: string;
+  assistantText?: string;
+} & Record<string, unknown>;
+
+type ApprovalEntry = {
+  id: string;
+  kind?: string;
+  threadId: string;
+  sessionId: string;
+  turnId?: string;
+  itemId?: string;
+  command?: string;
+  cwd?: string;
+  reason?: string;
+  commandActions?: unknown;
+  createdAt: string;
+} & Record<string, unknown>;
+
+type AssistantProvider = {
+  kind: string;
+  on: (event: string, handler: (payload: unknown) => void) => void;
+  setWorkspaceRoot: (projectRoot: string) => void;
+  sendTurn: (payload: {
+    sessionId: string | null;
+    prompt: string;
+    inputItems?: unknown[];
+    turnActivityTimeoutMs: number;
+    onSessionReady?: (providerSessionId: string) => Promise<void>;
+  }) => Promise<AssistantTurnResult>;
+  resolveApproval: (payload: {
+    approvalId: string;
+    decision: string;
+  }) => Promise<{ decision: string }>;
+  interruptTurn?: (payload: { sessionId: string }) => Promise<Record<string, unknown>>;
+  shutdown: () => Promise<void>;
+  getLatestQuotaSnapshot?: () => unknown;
+};
+
+type ConversationEngineInit = {
+  store: BridgeStore;
+  assistantProvider: AssistantProvider;
+  projectRoot: string;
+  turnActivityTimeoutMs: unknown;
+  maxMessages?: number;
+  onApprovalRequested?: ((payload: Record<string, unknown>) => Promise<void>) | null;
+};
+
+type TurnContext = {
+  source: MessageSource;
+  metadata: Record<string, unknown>;
+};
+
 export class ConversationEngine {
+  store: BridgeStore;
+  assistantProvider: AssistantProvider;
+  projectRoot: string;
+  turnActivityTimeoutMs: number;
+  maxMessages: number;
+  queueByThread: Map<string, Promise<unknown>>;
+  threadByProviderSession: Map<string, string>;
+  turnContextByThread: Map<string, TurnContext>;
+  pendingApprovalsByThread: Map<string, ApprovalEntry[]>;
+  onApprovalRequested: ((payload: Record<string, unknown>) => Promise<void>) | null;
+
   constructor({
     store,
     assistantProvider,
@@ -11,11 +106,11 @@ export class ConversationEngine {
     turnActivityTimeoutMs,
     maxMessages = DEFAULT_MAX_MESSAGES,
     onApprovalRequested = null,
-  }) {
+  }: ConversationEngineInit) {
     this.store = store;
     this.assistantProvider = assistantProvider;
     this.projectRoot = projectRoot;
-    this.turnActivityTimeoutMs = Number.parseInt(String(turnActivityTimeoutMs), 10) || 3600000;
+    this.turnActivityTimeoutMs = Number.parseInt(String(turnActivityTimeoutMs), 10) || 3_600_000;
     this.maxMessages = maxMessages;
     this.queueByThread = new Map();
     this.threadByProviderSession = new Map();
@@ -31,12 +126,24 @@ export class ConversationEngine {
     });
   }
 
-  setProjectRoot(projectRoot) {
+  setProjectRoot(projectRoot: string): void {
     this.projectRoot = projectRoot;
     this.assistantProvider.setWorkspaceRoot(projectRoot);
   }
 
-  async sendTurn({ threadId, prompt, source, metadata = {}, inputItems = [] }) {
+  async sendTurn({
+    threadId,
+    prompt,
+    source,
+    metadata = {},
+    inputItems = [],
+  }: {
+    threadId: string;
+    prompt?: string | null;
+    source?: unknown;
+    metadata?: Record<string, unknown>;
+    inputItems?: unknown[];
+  }) {
     const normalizedThreadId = normalizeThreadId(threadId);
     const text = String(prompt ?? "").trim();
     const normalizedInputItems = Array.isArray(inputItems) ? [...inputItems] : [];
@@ -70,27 +177,27 @@ export class ConversationEngine {
       });
 
       const result = await this.assistantProvider.sendTurn({
-        sessionId: previous.sessionId,
+        sessionId: (previous.sessionId as string | null | undefined) ?? null,
         prompt: text,
         inputItems: normalizedInputItems,
         turnActivityTimeoutMs: this.turnActivityTimeoutMs,
-        onSessionReady: async (providerSessionId) => {
+        onSessionReady: async (providerSessionId: string) => {
           this.threadByProviderSession.set(String(providerSessionId), normalizedThreadId);
         },
       });
       this.threadByProviderSession.set(result.sessionId, normalizedThreadId);
 
       const assistantText = (
-        result.assistantText || "Assistant provider returned no text output."
+        String(result.assistantText ?? "") || "Assistant provider returned no text output."
       ).trim();
       const thread = await this.store.upsertThread(normalizedThreadId, (current) => ({
         ...current,
         sessionId: result.sessionId ?? current.sessionId ?? null,
-        turnCount: (current.turnCount ?? 0) + 1,
+        turnCount: (Number(current.turnCount) || 0) + 1,
         lastMode: this.assistantProvider.kind,
         messages: trimMessages(
           [
-            ...(current.messages ?? []),
+            ...(Array.isArray(current.messages) ? current.messages : []),
             {
               role: "assistant",
               source: normalizedSource,
@@ -110,7 +217,7 @@ export class ConversationEngine {
     });
   }
 
-  async getThread(threadId) {
+  async getThread(threadId: string) {
     const normalizedThreadId = normalizeThreadId(threadId);
     const thread =
       (await this.store.getThread(normalizedThreadId)) ??
@@ -121,7 +228,7 @@ export class ConversationEngine {
     };
   }
 
-  async getMessages(threadId, limit) {
+  async getMessages(threadId: string, limit?: number) {
     const normalizedThreadId = normalizeThreadId(threadId);
     const messages = await this.store.listMessages(normalizedThreadId, limit);
     return {
@@ -130,13 +237,13 @@ export class ConversationEngine {
     };
   }
 
-  async resetThread(threadId) {
+  async resetThread(threadId: string) {
     const normalizedThreadId = normalizeThreadId(threadId);
     const previous = await this.store.getThread(normalizedThreadId);
     this.pendingApprovalsByThread.delete(normalizedThreadId);
     const thread = await this.store.resetThread(normalizedThreadId);
     if (previous?.sessionId) {
-      this.threadByProviderSession.delete(previous.sessionId);
+      this.threadByProviderSession.delete(String(previous.sessionId));
     }
     return {
       threadId: normalizedThreadId,
@@ -144,7 +251,7 @@ export class ConversationEngine {
     };
   }
 
-  listPendingApprovals(threadId = null) {
+  listPendingApprovals(threadId: string | null = null) {
     if (threadId) {
       const normalizedThreadId = normalizeThreadId(threadId);
       return [...(this.pendingApprovalsByThread.get(normalizedThreadId) ?? [])].map((entry) => ({
@@ -152,7 +259,7 @@ export class ConversationEngine {
       }));
     }
 
-    const all = [];
+    const all: ApprovalEntry[] = [];
     for (const entries of this.pendingApprovalsByThread.values()) {
       all.push(...entries);
     }
@@ -160,7 +267,15 @@ export class ConversationEngine {
     return all.map((entry) => ({ ...entry }));
   }
 
-  async resolvePendingApproval({ threadId, approvalId, decision }) {
+  async resolvePendingApproval({
+    threadId,
+    approvalId,
+    decision,
+  }: {
+    threadId: string;
+    approvalId: string;
+    decision: string;
+  }) {
     const normalizedThreadId = normalizeThreadId(threadId);
     const targetApprovalId = String(approvalId ?? "").trim();
     if (!targetApprovalId) {
@@ -187,7 +302,7 @@ export class ConversationEngine {
     };
   }
 
-  async interruptThread(threadId) {
+  async interruptThread(threadId: string) {
     const normalizedThreadId = normalizeThreadId(threadId);
     const thread =
       (await this.store.getThread(normalizedThreadId)) ??
@@ -241,7 +356,7 @@ export class ConversationEngine {
     return this.assistantProvider.getLatestQuotaSnapshot();
   }
 
-  #queue(threadId, work) {
+  #queue(threadId: string, work: () => Promise<unknown>) {
     const previous = this.queueByThread.get(threadId) ?? Promise.resolve();
     const next = previous.then(work, work);
     const tracked = next.finally(() => {
@@ -253,17 +368,22 @@ export class ConversationEngine {
     return tracked;
   }
 
-  async #handleApprovalRequested(approval) {
-    const providerSessionId = String(approval.sessionId ?? approval.threadId ?? "").trim();
+  async #handleApprovalRequested(approval: unknown): Promise<void> {
+    const approvalRecord =
+      approval && typeof approval === "object" ? (approval as Record<string, unknown>) : {};
+    const providerSessionId = String(
+      approvalRecord.sessionId ?? approvalRecord.threadId ?? "",
+    ).trim();
     if (!providerSessionId) {
       return;
     }
 
     let bridgeThreadId = this.threadByProviderSession.get(providerSessionId);
     if (!bridgeThreadId) {
-      bridgeThreadId = await this.store.findThreadIdBySessionId(providerSessionId);
-      if (bridgeThreadId) {
-        this.threadByProviderSession.set(providerSessionId, bridgeThreadId);
+      const lookedUpThreadId = await this.store.findThreadIdBySessionId(providerSessionId);
+      if (lookedUpThreadId) {
+        bridgeThreadId = lookedUpThreadId;
+        this.threadByProviderSession.set(providerSessionId, lookedUpThreadId);
       }
     }
 
@@ -271,18 +391,18 @@ export class ConversationEngine {
       return;
     }
 
-    const entry = {
-      id: approval.id,
-      kind: approval.kind,
+    const entry: ApprovalEntry = {
+      id: String(approvalRecord.id ?? ""),
+      kind: String(approvalRecord.kind ?? ""),
       threadId: bridgeThreadId,
       sessionId: providerSessionId,
-      turnId: approval.turnId,
-      itemId: approval.itemId,
-      command: approval.command,
-      cwd: approval.cwd,
-      reason: approval.reason,
-      commandActions: approval.commandActions,
-      createdAt: approval.createdAt,
+      turnId: String(approvalRecord.turnId ?? ""),
+      itemId: String(approvalRecord.itemId ?? ""),
+      command: String(approvalRecord.command ?? ""),
+      cwd: String(approvalRecord.cwd ?? ""),
+      reason: String(approvalRecord.reason ?? ""),
+      commandActions: approvalRecord.commandActions,
+      createdAt: String(approvalRecord.createdAt ?? new Date().toISOString()),
     };
 
     const previousEntries = this.pendingApprovalsByThread.get(bridgeThreadId) ?? [];
@@ -307,7 +427,7 @@ export class ConversationEngine {
   }
 }
 
-function trimMessages(messages, maxMessages) {
+function trimMessages(messages: BridgeMessage[], maxMessages: number): BridgeMessage[] {
   const safeMax =
     Number.isFinite(maxMessages) && maxMessages > 0
       ? Math.min(maxMessages, 1000)
@@ -318,7 +438,7 @@ function trimMessages(messages, maxMessages) {
   return messages.slice(messages.length - safeMax);
 }
 
-function normalizeSource(value) {
+function normalizeSource(value: unknown): MessageSource {
   const source = String(value ?? "").toLowerCase();
   if (source === "web" || source === "telegram" || source === "internal") {
     return source;
@@ -326,7 +446,7 @@ function normalizeSource(value) {
   return "internal";
 }
 
-function sanitizeError(error) {
+function sanitizeError(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error);
   return raw.split(/\r?\n/).slice(0, 12).join("\n");
 }

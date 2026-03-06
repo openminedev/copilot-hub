@@ -5,6 +5,8 @@ export default [
   {
     ignores: [
       "**/node_modules/**",
+      "**/dist/**",
+      "**/test-dist/**",
       ".git/**",
       ".copilot-hub/**",
       "logs/**",

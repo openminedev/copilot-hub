@@ -1,7 +1,10 @@
-// @ts-nocheck
 import fs from "node:fs/promises";
 import path from "node:path";
-import { loadBotRegistry } from "./bot-registry.js";
+import {
+  loadBotRegistry,
+  type LoadBotRegistryOptions,
+  type NormalizedBotDefinition,
+} from "./bot-registry.js";
 import {
   scaffoldCapabilityInWorkspace,
   normalizeCapabilityId,
@@ -10,9 +13,82 @@ import {
 import { CONTROL_ACTIONS, requireControlAction } from "./control-plane-actions.js";
 import { getExtensionContract } from "./extension-contract.js";
 import { assertControlPermission } from "./control-permission.js";
+import type { KernelSecretStore } from "./secret-store.js";
+
+type DeleteMode = "soft" | "purge_data" | "purge_all";
+type SandboxMode = "read-only" | "workspace-write" | "danger-full-access";
+type ApprovalPolicy = "on-request" | "on-failure" | "never";
+type ControlAction = (typeof CONTROL_ACTIONS)[keyof typeof CONTROL_ACTIONS];
+
+type RegistryAgent = Record<string, unknown>;
+type RegistryJson = {
+  version: number;
+  agents: RegistryAgent[];
+} & Record<string, unknown>;
+
+type KernelBotManager = {
+  getBot: (botId: string) => unknown;
+  listBotsLive: () => Promise<unknown[]>;
+  getBotStatus: (botId: string) => Promise<unknown>;
+  startBot: (botId: string) => Promise<unknown>;
+  stopBot: (botId: string) => Promise<unknown>;
+  registerBot: (
+    definition: NormalizedBotDefinition,
+    options?: { startIfEnabled?: boolean },
+  ) => Promise<unknown>;
+  removeBot: (
+    botId: string,
+    options?: { purgeData?: boolean; purgeWorkspace?: boolean },
+  ) => Promise<{ purgeData?: boolean; purgeWorkspace?: boolean }>;
+  setBotProject: (botId: string, projectName: string) => Promise<unknown>;
+  listProjects: () => Promise<unknown>;
+  createProject: (name: string) => Promise<unknown>;
+  setBotProviderOptions: (botId: string, options: Record<string, unknown>) => Promise<unknown>;
+  listBotCapabilities: (botId: string) => Promise<unknown>;
+  reloadBotCapabilities: (botId: string, nextCapabilities?: unknown) => Promise<unknown>;
+  setBotCapabilities: (botId: string, nextCapabilities: unknown) => unknown;
+};
+
+type KernelActionContext = {
+  source?: unknown;
+  metadata?: {
+    channelId?: unknown;
+    chatId?: unknown;
+  } | null;
+};
+
+type KernelActionRequest = {
+  actorBotId: string;
+  action: unknown;
+  payload?: unknown;
+  context?: KernelActionContext;
+};
+
+type RegistryLoadOptions = Partial<Omit<LoadBotRegistryOptions, "filePath" | "resolveSecret">>;
+
+type SecretsDeleteResult = {
+  name: string;
+  deleted: boolean;
+  error?: string;
+};
 
 export class KernelControlPlane {
-  constructor({ botManager, registryFilePath, registryLoadOptions, secretStore = null }) {
+  botManager: KernelBotManager;
+  registryFilePath: string;
+  registryLoadOptions: RegistryLoadOptions;
+  secretStore: KernelSecretStore | null;
+
+  constructor({
+    botManager,
+    registryFilePath,
+    registryLoadOptions,
+    secretStore = null,
+  }: {
+    botManager: KernelBotManager;
+    registryFilePath: string;
+    registryLoadOptions?: RegistryLoadOptions;
+    secretStore?: KernelSecretStore | null;
+  }) {
     this.botManager = botManager;
     this.registryFilePath = path.resolve(String(registryFilePath));
     this.registryLoadOptions =
@@ -20,15 +96,21 @@ export class KernelControlPlane {
     this.secretStore = secretStore;
   }
 
-  async handleAgentAction({ actorBotId, action, payload, context }) {
+  async handleAgentAction({
+    actorBotId,
+    action,
+    payload,
+    context,
+  }: KernelActionRequest): Promise<unknown> {
     const normalizedAction = requireControlAction(action);
     const supervisor = this.botManager.getBot(actorBotId);
-    assertControlPermission({
-      supervisor,
+    const permissionPayload: Parameters<typeof assertControlPermission>[0] = {
+      supervisor: supervisor as Parameters<typeof assertControlPermission>[0]["supervisor"],
       action: normalizedAction,
       source: context?.source,
-      metadata: context?.metadata,
-    });
+      metadata: context?.metadata ?? null,
+    };
+    assertControlPermission(permissionPayload);
     return this.#executeAction({
       action: normalizedAction,
       payload,
@@ -36,7 +118,7 @@ export class KernelControlPlane {
     });
   }
 
-  async runSystemAction(action, payload) {
+  async runSystemAction(action: unknown, payload: unknown): Promise<unknown> {
     const normalizedAction = requireControlAction(action);
     return this.#executeAction({
       action: normalizedAction,
@@ -45,8 +127,17 @@ export class KernelControlPlane {
     });
   }
 
-  async #executeAction({ action, payload, actorBotId }) {
-    const safePayload = payload && typeof payload === "object" ? payload : {};
+  async #executeAction({
+    action,
+    payload,
+    actorBotId,
+  }: {
+    action: ControlAction;
+    payload: unknown;
+    actorBotId: string | null;
+  }): Promise<unknown> {
+    const safePayload =
+      payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
 
     switch (action) {
       case CONTROL_ACTIONS.BOTS_LIST: {
@@ -79,7 +170,7 @@ export class KernelControlPlane {
         }
         const startIfEnabled = safePayload.startIfEnabled !== false;
         const created = await this.#createBot({
-          rawAgent: agent,
+          rawAgent: agent as RegistryAgent,
           startIfEnabled,
         });
         return created;
@@ -129,11 +220,22 @@ export class KernelControlPlane {
         const botId = requireNonEmptyString(safePayload.botId, "payload.botId");
         const sandboxMode = requireSandboxMode(safePayload.sandboxMode);
         const approvalPolicy = requireApprovalPolicy(safePayload.approvalPolicy);
-        return this.#setBotPolicy({
+        const hasModelOverride = Object.prototype.hasOwnProperty.call(safePayload, "model");
+        const model = hasModelOverride ? requireOptionalModel(safePayload.model) : undefined;
+        const policyPayload: {
+          botId: string;
+          sandboxMode: SandboxMode;
+          approvalPolicy: ApprovalPolicy;
+          model?: string | null;
+        } = {
           botId,
           sandboxMode,
           approvalPolicy,
-        });
+        };
+        if (hasModelOverride && model !== undefined) {
+          policyPayload.model = model;
+        }
+        return this.#setBotPolicy(policyPayload);
       }
 
       case CONTROL_ACTIONS.BOTS_CAPABILITIES_LIST: {
@@ -195,13 +297,29 @@ export class KernelControlPlane {
     }
   }
 
-  async #createBot({ rawAgent, startIfEnabled }) {
+  async #createBot({
+    rawAgent,
+    startIfEnabled,
+  }: {
+    rawAgent: RegistryAgent;
+    startIfEnabled: boolean;
+  }): Promise<{
+    bot: unknown;
+    paths: {
+      workspaceRoot: { path: string; existed: boolean };
+      dataDir: { path: string; existed: boolean };
+    };
+  }> {
     const requestedId = requireNonEmptyString(rawAgent.id, "agent.id");
 
     const previousRegistryText = await fs.readFile(this.registryFilePath, "utf8");
     const previousRegistry = parseRegistryJson(previousRegistryText, this.registryFilePath);
 
-    if (previousRegistry.agents.some((entry) => String(entry?.id ?? "").trim() === requestedId)) {
+    if (
+      previousRegistry.agents.some(
+        (entry) => String((entry as RegistryAgent)?.id ?? "").trim() === requestedId,
+      )
+    ) {
       throw new Error(`Bot '${requestedId}' already exists.`);
     }
 
@@ -225,12 +343,31 @@ export class KernelControlPlane {
     }
   }
 
-  async #deleteBot({ botId, deleteMode, purgeData, purgeWorkspace }) {
+  async #deleteBot({
+    botId,
+    deleteMode,
+    purgeData,
+    purgeWorkspace,
+  }: {
+    botId: string;
+    deleteMode: DeleteMode;
+    purgeData: boolean;
+    purgeWorkspace: boolean;
+  }): Promise<{
+    botId: string;
+    deleteMode: DeleteMode;
+    purgeData: boolean;
+    purgeWorkspace: boolean;
+    tokenSecretRefs: string[];
+    secretsDeleted: SecretsDeleteResult[];
+  }> {
     const previousRegistryText = await fs.readFile(this.registryFilePath, "utf8");
     const previousRegistry = parseRegistryJson(previousRegistryText, this.registryFilePath);
 
     const targetAgent =
-      previousRegistry.agents.find((entry) => String(entry?.id ?? "").trim() === botId) ?? null;
+      previousRegistry.agents.find(
+        (entry) => String((entry as RegistryAgent)?.id ?? "").trim() === botId,
+      ) ?? null;
     if (!targetAgent) {
       throw new Error(`Bot '${botId}' does not exist.`);
     }
@@ -239,7 +376,9 @@ export class KernelControlPlane {
     const nextRegistry = {
       ...previousRegistry,
       version: Number(previousRegistry.version) || 3,
-      agents: previousRegistry.agents.filter((entry) => String(entry?.id ?? "").trim() !== botId),
+      agents: previousRegistry.agents.filter(
+        (entry) => String((entry as RegistryAgent)?.id ?? "").trim() !== botId,
+      ),
     };
     await this.#writeRegistry(nextRegistry);
 
@@ -249,7 +388,7 @@ export class KernelControlPlane {
         purgeWorkspace,
       });
 
-      let secretsDeleted = [];
+      let secretsDeleted: SecretsDeleteResult[] = [];
       if (purgeWorkspace && tokenSecretRefs.length > 0) {
         secretsDeleted = await this.#deleteSecretsBestEffort(tokenSecretRefs);
       }
@@ -270,31 +409,58 @@ export class KernelControlPlane {
     }
   }
 
-  async #setBotPolicy({ botId, sandboxMode, approvalPolicy }) {
+  async #setBotPolicy({
+    botId,
+    sandboxMode,
+    approvalPolicy,
+    model,
+  }: {
+    botId: string;
+    sandboxMode: SandboxMode;
+    approvalPolicy: ApprovalPolicy;
+    model?: string | null;
+  }): Promise<{
+    bot: unknown;
+    policy: {
+      sandboxMode: SandboxMode;
+      approvalPolicy: ApprovalPolicy;
+      model: string | null;
+    };
+  }> {
     const previousRegistryText = await fs.readFile(this.registryFilePath, "utf8");
     const previousRegistry = parseRegistryJson(previousRegistryText, this.registryFilePath);
-    const targetIndex = previousRegistry.agents.findIndex(
-      (entry) => String(entry?.id ?? "").trim() === botId,
-    );
+    const targetIndex = previousRegistry.agents.findIndex((entry) => {
+      const candidate = entry as RegistryAgent;
+      return String(candidate?.id ?? "").trim() === botId;
+    });
     if (targetIndex < 0) {
       throw new Error(`Bot '${botId}' does not exist.`);
     }
 
-    const targetAgent = previousRegistry.agents[targetIndex];
-    const currentProvider =
+    const targetAgent = previousRegistry.agents[targetIndex] as RegistryAgent;
+    const currentProvider: { kind?: unknown; options?: unknown } & Record<string, unknown> =
       targetAgent?.provider && typeof targetAgent.provider === "object"
-        ? targetAgent.provider
+        ? (targetAgent.provider as Record<string, unknown>)
         : { kind: "codex", options: {} };
+    const nextProviderOptions: Record<string, unknown> = {
+      ...(currentProvider.options && typeof currentProvider.options === "object"
+        ? currentProvider.options
+        : {}),
+      sandboxMode,
+      approvalPolicy,
+    };
+    if (model !== undefined) {
+      if (model) {
+        nextProviderOptions.model = model;
+      } else {
+        delete nextProviderOptions.model;
+      }
+    }
+
     const nextProvider = {
       ...currentProvider,
       kind: String(currentProvider.kind ?? "codex").trim() || "codex",
-      options: {
-        ...(currentProvider.options && typeof currentProvider.options === "object"
-          ? currentProvider.options
-          : {}),
-        sandboxMode,
-        approvalPolicy,
-      },
+      options: nextProviderOptions,
     };
 
     const nextAgents = [...previousRegistry.agents];
@@ -312,15 +478,21 @@ export class KernelControlPlane {
     await this.#writeRegistry(nextRegistry);
 
     try {
-      const bot = await this.botManager.setBotProviderOptions(botId, {
+      const runtimeProviderUpdate: Record<string, unknown> = {
         sandboxMode,
         approvalPolicy,
-      });
+      };
+      if (model !== undefined) {
+        runtimeProviderUpdate.model = model;
+      }
+
+      const bot = await this.botManager.setBotProviderOptions(botId, runtimeProviderUpdate);
       return {
         bot,
         policy: {
           sandboxMode,
           approvalPolicy,
+          model: normalizeModelFromOptions(nextProviderOptions.model),
         },
       };
     } catch (error) {
@@ -331,13 +503,13 @@ export class KernelControlPlane {
     }
   }
 
-  async #deleteSecretsBestEffort(secretNames) {
+  async #deleteSecretsBestEffort(secretNames: unknown): Promise<SecretsDeleteResult[]> {
     const names = Array.isArray(secretNames) ? secretNames : [];
     if (!this.secretStore || names.length === 0) {
       return [];
     }
 
-    const deleted = [];
+    const deleted: SecretsDeleteResult[] = [];
     for (const name of names) {
       try {
         const result = await this.secretStore.deleteSecret(name);
@@ -356,24 +528,44 @@ export class KernelControlPlane {
     return deleted;
   }
 
-  async #scaffoldCapability({ botId, capabilityId, capabilityName }) {
+  async #scaffoldCapability({
+    botId,
+    capabilityId,
+    capabilityName,
+  }: {
+    botId: string;
+    capabilityId: string;
+    capabilityName: string;
+  }): Promise<{
+    bot: unknown;
+    capability: {
+      id: string;
+      enabled: boolean;
+      manifestPath: string;
+      options: Record<string, unknown>;
+    };
+    scaffold: unknown;
+  }> {
     const previousRegistryText = await fs.readFile(this.registryFilePath, "utf8");
     const previousRegistry = parseRegistryJson(previousRegistryText, this.registryFilePath);
 
-    const targetIndex = previousRegistry.agents.findIndex(
-      (entry) => String(entry?.id ?? "").trim() === botId,
-    );
+    const targetIndex = previousRegistry.agents.findIndex((entry) => {
+      const candidate = entry as RegistryAgent;
+      return String(candidate?.id ?? "").trim() === botId;
+    });
     if (targetIndex < 0) {
       throw new Error(`Bot '${botId}' does not exist.`);
     }
 
-    const targetAgent = previousRegistry.agents[targetIndex];
+    const targetAgent = previousRegistry.agents[targetIndex] as RegistryAgent;
     const existingCapabilities = Array.isArray(targetAgent?.capabilities)
-      ? targetAgent.capabilities
+      ? (targetAgent.capabilities as unknown[])
       : [];
     const alreadyDeclared = existingCapabilities.some(
       (entry) =>
-        entry && typeof entry === "object" && String(entry.id ?? "").trim() === capabilityId,
+        entry &&
+        typeof entry === "object" &&
+        String((entry as Record<string, unknown>).id ?? "").trim() === capabilityId,
     );
     if (alreadyDeclared) {
       throw new Error(`Capability '${capabilityId}' already exists for bot '${botId}'.`);
@@ -381,7 +573,7 @@ export class KernelControlPlane {
 
     const normalizedBefore = await this.#loadNormalizedBot(botId);
     const previousLoadedCapabilities = Array.isArray(normalizedBefore.capabilities)
-      ? normalizedBefore.capabilities
+      ? [...normalizedBefore.capabilities]
       : [];
     const scaffold = await scaffoldCapabilityInWorkspace({
       workspaceRoot: normalizedBefore.workspaceRoot,
@@ -434,12 +626,12 @@ export class KernelControlPlane {
     }
   }
 
-  async #loadNormalizedBot(botId) {
+  async #loadNormalizedBot(botId: string): Promise<NormalizedBotDefinition> {
     const registry = await loadBotRegistry({
       filePath: this.registryFilePath,
-      resolveSecret: (name) => this.secretStore?.getSecret(name) ?? null,
+      resolveSecret: (name: string) => this.secretStore?.getSecret(name) ?? null,
       ...this.registryLoadOptions,
-    });
+    } as LoadBotRegistryOptions);
     const normalized = registry.bots.find((entry) => entry.id === botId);
     if (!normalized) {
       throw new Error(`Could not normalize bot '${botId}' from registry.`);
@@ -447,7 +639,10 @@ export class KernelControlPlane {
     return normalized;
   }
 
-  async #ensureBotDirectories(botDefinition) {
+  async #ensureBotDirectories(botDefinition: NormalizedBotDefinition): Promise<{
+    workspaceRoot: { path: string; existed: boolean };
+    dataDir: { path: string; existed: boolean };
+  }> {
     const workspacePath = path.resolve(String(botDefinition.workspaceRoot));
     const dataDirPath = path.resolve(String(botDefinition.dataDir));
     const workspaceExisted = await directoryExists(workspacePath);
@@ -468,18 +663,20 @@ export class KernelControlPlane {
     };
   }
 
-  async #writeRegistry(value) {
+  async #writeRegistry(value: RegistryJson): Promise<void> {
     await fs.writeFile(this.registryFilePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
   }
 }
 
-function ensureSecretStore(secretStore) {
+function ensureSecretStore(
+  secretStore: KernelSecretStore | null,
+): asserts secretStore is KernelSecretStore {
   if (!secretStore) {
     throw new Error("Secret store is not configured in kernel.");
   }
 }
 
-function requireNonEmptyString(value, label) {
+function requireNonEmptyString(value: unknown, label: string): string {
   const normalized = String(value ?? "").trim();
   if (!normalized) {
     throw new Error(`${label} is required.`);
@@ -487,8 +684,8 @@ function requireNonEmptyString(value, label) {
   return normalized;
 }
 
-function parseRegistryJson(text, filePath) {
-  let parsed;
+function parseRegistryJson(text: unknown, filePath: string): RegistryJson {
+  let parsed: unknown;
   try {
     parsed = JSON.parse(stripBom(String(text ?? "")));
   } catch {
@@ -498,20 +695,27 @@ function parseRegistryJson(text, filePath) {
   if (!parsed || typeof parsed !== "object") {
     throw new Error(`Registry file '${filePath}' must contain an object.`);
   }
-  if (!Array.isArray(parsed.agents)) {
+  const parsedObj = parsed as { agents?: unknown };
+  if (!Array.isArray(parsedObj.agents)) {
     throw new Error(`Registry file '${filePath}' must contain an agents array.`);
   }
-  return parsed;
+  return {
+    ...(parsed as Record<string, unknown>),
+    version: Number((parsed as { version?: unknown }).version) || 3,
+    agents: parsedObj.agents.map((entry) =>
+      entry && typeof entry === "object" ? (entry as RegistryAgent) : {},
+    ),
+  };
 }
 
-function stripBom(value) {
+function stripBom(value: string): string {
   if (value.charCodeAt(0) === 0xfeff) {
     return value.slice(1);
   }
   return value;
 }
 
-async function directoryExists(candidatePath) {
+async function directoryExists(candidatePath: string): Promise<boolean> {
   try {
     const stat = await fs.stat(candidatePath);
     return stat.isDirectory();
@@ -520,7 +724,7 @@ async function directoryExists(candidatePath) {
   }
 }
 
-function parseDeleteMode(payload) {
+function parseDeleteMode(payload: Record<string, unknown>): DeleteMode {
   const value = String(payload?.deleteMode ?? "")
     .trim()
     .toLowerCase();
@@ -533,31 +737,64 @@ function parseDeleteMode(payload) {
 const ALLOWED_SANDBOX_MODES = new Set(["read-only", "workspace-write", "danger-full-access"]);
 const ALLOWED_APPROVAL_POLICIES = new Set(["on-request", "on-failure", "never"]);
 
-function requireSandboxMode(value) {
+function requireSandboxMode(value: unknown): SandboxMode {
   const normalized = String(value ?? "")
     .trim()
     .toLowerCase();
   if (!ALLOWED_SANDBOX_MODES.has(normalized)) {
     throw new Error(`Unsupported sandboxMode '${normalized || "<empty>"}'.`);
   }
-  return normalized;
+  return normalized as SandboxMode;
 }
 
-function requireApprovalPolicy(value) {
+function requireApprovalPolicy(value: unknown): ApprovalPolicy {
   const normalized = String(value ?? "")
     .trim()
     .toLowerCase();
   if (!ALLOWED_APPROVAL_POLICIES.has(normalized)) {
     throw new Error(`Unsupported approvalPolicy '${normalized || "<empty>"}'.`);
   }
+  return normalized as ApprovalPolicy;
+}
+
+function requireOptionalModel(value: unknown): string | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  const normalized = String(value).trim();
+  if (!normalized) {
+    return null;
+  }
+
+  const keyword = normalized.toLowerCase();
+  if (keyword === "auto" || keyword === "default") {
+    return null;
+  }
+
+  if (normalized.length > 120) {
+    throw new Error("model is too long.");
+  }
+  if (!/^[A-Za-z0-9._:-]+$/.test(normalized)) {
+    throw new Error("model format is invalid.");
+  }
+
   return normalized;
 }
 
-function collectChannelTokenSecretRefs(agent) {
-  const channels = Array.isArray(agent?.channels) ? agent.channels : [];
-  const refs = [];
+function normalizeModelFromOptions(value: unknown): string | null {
+  const normalized = String(value ?? "").trim();
+  return normalized || null;
+}
+
+function collectChannelTokenSecretRefs(agent: unknown): string[] {
+  const agentRecord = agent && typeof agent === "object" ? (agent as RegistryAgent) : {};
+  const channels = Array.isArray(agentRecord?.channels) ? (agentRecord.channels as unknown[]) : [];
+  const refs: string[] = [];
   for (const channel of channels) {
-    const raw = String(channel?.tokenSecretRef ?? "").trim();
+    const channelRecord =
+      channel && typeof channel === "object" ? (channel as Record<string, unknown>) : {};
+    const raw = String(channelRecord?.tokenSecretRef ?? "").trim();
     if (raw) {
       refs.push(raw);
     }
@@ -565,7 +802,7 @@ function collectChannelTokenSecretRefs(agent) {
   return [...new Set(refs)];
 }
 
-function sanitizeError(error) {
+function sanitizeError(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error);
   return raw.split(/\r?\n/).slice(0, 12).join("\n");
 }

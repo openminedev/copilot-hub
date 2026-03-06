@@ -1,8 +1,19 @@
-// @ts-nocheck
 import { TelegramChannel } from "./telegram-channel.js";
 import { WhatsAppChannel } from "./whatsapp-channel.js";
 
-export function createChannelAdapter({ channelConfig, runtime }) {
+type ChannelConfig = {
+  kind?: unknown;
+} & Record<string, unknown>;
+
+type CreateChannelAdapterParams = {
+  channelConfig: ChannelConfig;
+  runtime: unknown;
+};
+
+export function createChannelAdapter({
+  channelConfig,
+  runtime,
+}: CreateChannelAdapterParams): TelegramChannel | WhatsAppChannel {
   const kind = String(channelConfig?.kind ?? "")
     .trim()
     .toLowerCase();

@@ -1,6 +1,6 @@
 {
   "name": "copilot-hub",
-  "version": "0.1.14",
+  "version": "0.1.15",
   "description": "Copilot Hub CLI and runtime bundle",
   "license": "MIT",
   "repository": {
@@ -79,6 +79,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.22.0",
+    "@types/express": "^5.0.6",
     "@types/node": "^22.13.10",
     "eslint": "^9.22.0",
     "globals": "^16.0.0",

@@ -1,4 +1,3 @@
-// @ts-nocheck
 import path from "node:path";
 import { BotRuntime } from "@copilot-hub/core/bot-runtime";
 import { config } from "./config.js";
@@ -43,10 +42,10 @@ const hubThreadMode = normalizeThreadMode(process.env.HUB_THREAD_MODE ?? "per_ch
 const hubSharedThreadId =
   String(process.env.HUB_SHARED_THREAD_ID ?? "shared-copilot-hub").trim() || "shared-copilot-hub";
 const allowedChatIds = parseCsvSet(process.env.HUB_ALLOWED_CHAT_IDS ?? "");
-let hubSandboxMode = String(
+const hubSandboxMode = String(
   process.env.HUB_CODEX_SANDBOX ?? config.codexSandbox ?? "danger-full-access",
 ).trim();
-let hubApprovalPolicy = String(
+const hubApprovalPolicy = String(
   process.env.HUB_CODEX_APPROVAL_POLICY ?? config.codexApprovalPolicy ?? "never",
 ).trim();
 
@@ -85,20 +84,20 @@ const runtime = new BotRuntime({
   providerDefaults: config.providerDefaults,
   turnActivityTimeoutMs: config.turnActivityTimeoutMs,
   maxMessages: config.maxMessages,
-  channelAdapterFactory: createChannelAdapter,
+  channelAdapterFactory: createChannelAdapter as any,
 });
 
 let shuttingDown = false;
 
 await bootstrap();
 
-async function bootstrap() {
+async function bootstrap(): Promise<void> {
   await runtime.startChannels();
   console.log(`[copilot_hub] online as '${hubId}' on workspace '${hubWorkspaceRoot}'.`);
   registerSignals();
 }
 
-function registerSignals() {
+function registerSignals(): void {
   process.on("SIGINT", () => {
     void shutdown(0);
   });
@@ -115,7 +114,7 @@ function registerSignals() {
   });
 }
 
-async function shutdown(exitCode) {
+async function shutdown(exitCode: number): Promise<void> {
   if (shuttingDown) {
     return;
   }
@@ -128,7 +127,7 @@ async function shutdown(exitCode) {
   process.exit(exitCode);
 }
 
-function normalizeThreadMode(value) {
+function normalizeThreadMode(value: unknown): "single" | "per_chat" {
   const mode = String(value ?? "per_chat")
     .trim()
     .toLowerCase();
@@ -138,7 +137,7 @@ function normalizeThreadMode(value) {
   return "per_chat";
 }
 
-function parseCsvSet(value) {
+function parseCsvSet(value: unknown): Set<string> {
   return new Set(
     String(value ?? "")
       .split(",")
@@ -147,7 +146,7 @@ function parseCsvSet(value) {
   );
 }
 
-function sanitizeError(error) {
+function sanitizeError(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error);
   return raw.split(/\r?\n/).slice(0, 12).join("\n");
 }

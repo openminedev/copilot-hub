@@ -1,10 +1,53 @@
-// @ts-nocheck
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { AgentSupervisor } from "./agent-supervisor.js";
 
+type KernelActionRequest = Record<string, unknown>;
+type KernelActionHandler = (request: KernelActionRequest) => Promise<unknown> | unknown;
+
+type BotDefinition = {
+  id: string;
+  name: string;
+  enabled?: boolean;
+  autoStart?: boolean;
+  dataDir: string;
+  workspaceRoot: string;
+  threadMode?: string;
+  sharedThreadId?: string;
+  provider?: {
+    kind?: string;
+    options?: Record<string, unknown>;
+  };
+  kernelAccess?: {
+    enabled?: boolean;
+    allowedActions?: unknown;
+    allowedChatIds?: unknown;
+  };
+  capabilities?: unknown[];
+  channels?: unknown[];
+} & Record<string, unknown>;
+
+type ProviderDefaults = Record<string, unknown>;
+
+type SupervisorStatus = ReturnType<AgentSupervisor["getStatus"]>;
+
 export class BotManager {
+  supervisors: Map<string, AgentSupervisor>;
+  providerDefaults: ProviderDefaults;
+  turnActivityTimeoutMs: number;
+  maxMessages: number;
+  webPublicBaseUrl: string;
+  projectsBaseDir: string;
+  botDataRootDir: string | null;
+  workerScriptPath: string;
+  kernelActionHandler: KernelActionHandler | null;
+  heartbeatEnabled: boolean;
+  heartbeatIntervalMs: number;
+  heartbeatTimeoutMs: number;
+  heartbeatTimer: ReturnType<typeof setInterval> | null;
+  heartbeatRunning: boolean;
+
   constructor({
     botDefinitions,
     providerDefaults,
@@ -18,6 +61,19 @@ export class BotManager {
     heartbeatEnabled = true,
     heartbeatIntervalMs = 5000,
     heartbeatTimeoutMs = 4000,
+  }: {
+    botDefinitions: BotDefinition[];
+    providerDefaults: ProviderDefaults;
+    turnActivityTimeoutMs: number;
+    maxMessages: number;
+    webPublicBaseUrl: string;
+    projectsBaseDir: string;
+    workerScriptPath: string;
+    botDataRootDir?: string | null;
+    onKernelAction?: KernelActionHandler | null;
+    heartbeatEnabled?: boolean;
+    heartbeatIntervalMs?: number;
+    heartbeatTimeoutMs?: number;
   }) {
     this.supervisors = new Map();
     this.providerDefaults = providerDefaults;
@@ -43,26 +99,26 @@ export class BotManager {
     }
   }
 
-  getBotCount() {
+  getBotCount(): number {
     return this.supervisors.size;
   }
 
-  hasBot(botId) {
+  hasBot(botId: string): boolean {
     return this.supervisors.has(String(botId));
   }
 
-  setKernelActionHandler(handler) {
+  setKernelActionHandler(handler: KernelActionHandler | null): void {
     this.kernelActionHandler = typeof handler === "function" ? handler : null;
   }
 
-  setWebPublicBaseUrl(value) {
+  setWebPublicBaseUrl(value: string): void {
     this.webPublicBaseUrl = value;
     for (const supervisor of this.supervisors.values()) {
       supervisor.setWebPublicBaseUrl(value);
     }
   }
 
-  async startAutoBots() {
+  async startAutoBots(): Promise<void> {
     for (const supervisor of this.supervisors.values()) {
       if (supervisor.config.enabled !== false) {
         await supervisor.boot();
@@ -71,12 +127,12 @@ export class BotManager {
     this.startHeartbeatScheduler();
   }
 
-  listBots() {
+  listBots(): SupervisorStatus[] {
     return [...this.supervisors.values()].map((supervisor) => supervisor.getStatus());
   }
 
-  async listBotsLive() {
-    const statuses = [];
+  async listBotsLive(): Promise<SupervisorStatus[]> {
+    const statuses: SupervisorStatus[] = [];
     for (const supervisor of this.supervisors.values()) {
       try {
         statuses.push(await supervisor.refreshStatus());
@@ -87,7 +143,7 @@ export class BotManager {
     return statuses;
   }
 
-  getBot(botId) {
+  getBot(botId: string): AgentSupervisor {
     const supervisor = this.supervisors.get(String(botId));
     if (!supervisor) {
       throw new Error(`Unknown bot '${botId}'.`);
@@ -95,32 +151,36 @@ export class BotManager {
     return supervisor;
   }
 
-  async getBotStatus(botId) {
+  async getBotStatus(botId: string): Promise<SupervisorStatus> {
     const supervisor = this.getBot(botId);
     return supervisor.refreshStatus();
   }
 
-  async startBot(botId) {
+  async startBot(botId: string): Promise<SupervisorStatus> {
     const supervisor = this.getBot(botId);
     return supervisor.startChannels();
   }
 
-  async stopBot(botId) {
+  async stopBot(botId: string): Promise<SupervisorStatus> {
     const supervisor = this.getBot(botId);
     return supervisor.stopChannels();
   }
 
-  async resetWebThread(botId) {
+  async resetWebThread(botId: string): Promise<unknown> {
     const supervisor = this.getBot(botId);
     return supervisor.resetWebThread();
   }
 
-  async listBotApprovals(botId, threadId) {
+  async listBotApprovals(botId: string, threadId?: string): Promise<unknown[]> {
     const supervisor = this.getBot(botId);
-    return supervisor.listPendingApprovals(threadId);
+    const approvals = await supervisor.listPendingApprovals(threadId);
+    return Array.isArray(approvals) ? approvals : [];
   }
 
-  async resolveBotApproval(botId, { threadId, approvalId, decision }) {
+  async resolveBotApproval(
+    botId: string,
+    { threadId, approvalId, decision }: { threadId: string; approvalId: string; decision: string },
+  ): Promise<unknown> {
     const supervisor = this.getBot(botId);
     return supervisor.resolvePendingApproval({
       threadId,
@@ -129,35 +189,46 @@ export class BotManager {
     });
   }
 
-  async listBotCapabilities(botId) {
+  async listBotCapabilities(botId: string): Promise<unknown> {
     const supervisor = this.getBot(botId);
     return supervisor.listCapabilities();
   }
 
-  setBotCapabilities(botId, nextCapabilities) {
+  setBotCapabilities(botId: string, nextCapabilities: unknown): SupervisorStatus {
     const supervisor = this.getBot(botId);
     supervisor.setCapabilities(nextCapabilities);
     return supervisor.getStatus();
   }
 
-  async setBotProviderOptions(botId, providerOptions) {
+  async setBotProviderOptions(
+    botId: string,
+    providerOptions: Record<string, unknown>,
+  ): Promise<SupervisorStatus> {
     const supervisor = this.getBot(botId);
     return supervisor.setProviderOptions(providerOptions);
   }
 
-  async reloadBotCapabilities(botId, nextCapabilities = null) {
+  async reloadBotCapabilities(
+    botId: string,
+    nextCapabilities: unknown = null,
+  ): Promise<SupervisorStatus> {
     const supervisor = this.getBot(botId);
-    return supervisor.reloadCapabilities(nextCapabilities);
+    return supervisor.reloadCapabilities(
+      nextCapabilities as Parameters<AgentSupervisor["reloadCapabilities"]>[0],
+    );
   }
 
-  async shutdownAll() {
+  async shutdownAll(): Promise<void> {
     this.stopHeartbeatScheduler();
     for (const supervisor of this.supervisors.values()) {
       await supervisor.shutdown();
     }
   }
 
-  async registerBot(definition, { startIfEnabled = true } = {}) {
+  async registerBot(
+    definition: BotDefinition,
+    { startIfEnabled = true }: { startIfEnabled?: boolean } = {},
+  ): Promise<SupervisorStatus> {
     const id = String(definition?.id ?? "").trim();
     if (!id) {
       throw new Error("Bot definition id is required.");
@@ -176,7 +247,18 @@ export class BotManager {
     return supervisor.getStatus();
   }
 
-  async removeBot(botId, { purgeData = false, purgeWorkspace = false } = {}) {
+  async removeBot(
+    botId: string,
+    {
+      purgeData = false,
+      purgeWorkspace = false,
+    }: { purgeData?: boolean; purgeWorkspace?: boolean } = {},
+  ): Promise<{
+    id: string;
+    removed: true;
+    purgeData: boolean;
+    purgeWorkspace: boolean;
+  }> {
     const id = String(botId ?? "").trim();
     if (!id) {
       throw new Error("botId is required.");
@@ -206,7 +288,10 @@ export class BotManager {
     };
   }
 
-  async listProjects() {
+  async listProjects(): Promise<{
+    baseDir: string;
+    projects: Array<{ name: string; path: string }>;
+  }> {
     await fs.mkdir(this.projectsBaseDir, { recursive: true });
     const entries = await fs.readdir(this.projectsBaseDir, { withFileTypes: true });
     const projects = entries
@@ -222,7 +307,7 @@ export class BotManager {
     };
   }
 
-  async createProject(projectName) {
+  async createProject(projectName: string): Promise<{ name: string; path: string }> {
     const normalized = normalizeProjectName(projectName);
     const projectPath = resolveProjectPath(this.projectsBaseDir, normalized);
     await fs.mkdir(projectPath, { recursive: true });
@@ -232,7 +317,7 @@ export class BotManager {
     };
   }
 
-  async setBotProject(botId, projectName) {
+  async setBotProject(botId: string, projectName: string): Promise<SupervisorStatus> {
     const supervisor = this.getBot(botId);
     const normalized = normalizeProjectName(projectName);
     const projectPath = resolveProjectPath(this.projectsBaseDir, normalized);
@@ -244,7 +329,7 @@ export class BotManager {
     return supervisor.setProjectRoot(projectPath);
   }
 
-  #createSupervisor(definition) {
+  #createSupervisor(definition: BotDefinition): AgentSupervisor {
     return new AgentSupervisor({
       botConfig: definition,
       providerDefaults: this.providerDefaults,
@@ -252,18 +337,18 @@ export class BotManager {
       maxMessages: this.maxMessages,
       webPublicBaseUrl: this.webPublicBaseUrl,
       workerScriptPath: this.workerScriptPath,
-      onKernelAction: (request) => this.#dispatchKernelAction(request),
+      onKernelAction: (request: KernelActionRequest) => this.#dispatchKernelAction(request),
     });
   }
 
-  async #dispatchKernelAction(request) {
+  async #dispatchKernelAction(request: KernelActionRequest): Promise<unknown> {
     if (!this.kernelActionHandler) {
       throw new Error("Kernel action handler is not configured.");
     }
     return this.kernelActionHandler(request);
   }
 
-  startHeartbeatScheduler() {
+  startHeartbeatScheduler(): void {
     if (!this.heartbeatEnabled || this.heartbeatTimer) {
       return;
     }
@@ -276,7 +361,7 @@ export class BotManager {
     }
   }
 
-  stopHeartbeatScheduler() {
+  stopHeartbeatScheduler(): void {
     if (!this.heartbeatTimer) {
       return;
     }
@@ -284,7 +369,7 @@ export class BotManager {
     this.heartbeatTimer = null;
   }
 
-  async #runHeartbeatTick() {
+  async #runHeartbeatTick(): Promise<void> {
     if (this.heartbeatRunning) {
       return;
     }
@@ -301,7 +386,7 @@ export class BotManager {
     }
   }
 
-  async #purgeBotDataDir(dataDir) {
+  async #purgeBotDataDir(dataDir: unknown): Promise<void> {
     if (!this.botDataRootDir) {
       throw new Error("botDataRootDir is not configured, cannot purge bot data.");
     }
@@ -316,7 +401,7 @@ export class BotManager {
     await fs.rm(target, { recursive: true, force: true });
   }
 
-  async #purgeBotWorkspace(workspaceRoot) {
+  async #purgeBotWorkspace(workspaceRoot: unknown): Promise<void> {
     const target = path.resolve(String(workspaceRoot ?? ""));
     if (!target) {
       throw new Error("Invalid bot workspace directory.");
@@ -339,7 +424,7 @@ export class BotManager {
 
 const PROJECT_NAME_PATTERN = /^[A-Za-z0-9._-]{1,80}$/;
 
-function normalizeProjectName(value) {
+function normalizeProjectName(value: unknown): string {
   const name = String(value ?? "").trim();
   if (!PROJECT_NAME_PATTERN.test(name)) {
     throw new Error("Invalid project name. Allowed: letters, numbers, dot, underscore, dash.");
@@ -347,7 +432,7 @@ function normalizeProjectName(value) {
   return name;
 }
 
-function resolveProjectPath(baseDir, projectName) {
+function resolveProjectPath(baseDir: string, projectName: string): string {
   const full = path.resolve(baseDir, projectName);
   const resolvedBase = path.resolve(baseDir);
   const normalizedBase = `${resolvedBase}${path.sep}`;
@@ -357,7 +442,7 @@ function resolveProjectPath(baseDir, projectName) {
   return full;
 }
 
-function isSubPath(candidatePath, rootPath) {
+function isSubPath(candidatePath: string, rootPath: string): boolean {
   const normalizedRoot = path.resolve(rootPath);
   const normalizedCandidate = path.resolve(candidatePath);
   if (normalizedCandidate === normalizedRoot) {
@@ -369,7 +454,10 @@ function isSubPath(candidatePath, rootPath) {
   return normalizedCandidate.startsWith(rootWithSep);
 }
 
-function assertSafePurgeTarget(targetPath, { label, protectedPaths }) {
+function assertSafePurgeTarget(
+  targetPath: string,
+  { label, protectedPaths }: { label: string; protectedPaths: Array<string | null> },
+): void {
   const normalizedTarget = path.resolve(String(targetPath ?? ""));
   const root = path.parse(normalizedTarget).root;
   if (normalizedTarget === root) {

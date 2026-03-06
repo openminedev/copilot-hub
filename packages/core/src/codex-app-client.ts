@@ -1,21 +1,157 @@
-// @ts-nocheck
 import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
+import {
+  extractQuotaSnapshot,
+  extractSessionConfiguredModel,
+  extractThreadLifecycleModel,
+} from "./codex-app-events.js";
+import {
+  annotateSpawnError,
+  asRecord,
+  createApprovalId,
+  isRecord,
+  makeTurnKey,
+  normalizeApprovalDecision,
+  normalizeApprovalPolicy,
+  normalizeCliPath,
+  normalizeModel,
+  normalizeSandboxMode,
+  normalizeTimeout,
+  normalizeTurnInputItems,
+  sanitizeError,
+  toRequestId,
+  toRpcId,
+} from "./codex-app-utils.js";
+import type {
+  ApprovalDecision,
+  ApprovalPolicy,
+  ModelValue,
+  SandboxMode,
+} from "./codex-app-utils.js";
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_TURN_ACTIVITY_TIMEOUT_MS = 3_600_000;
 
+type ApprovalRecord = {
+  id: string;
+  serverRequestId: string | number;
+  kind: string;
+  method: string;
+  threadId: string;
+  turnId: string;
+  itemId: string;
+  command: string | null;
+  cwd: string | null;
+  reason: string | null;
+  commandActions: unknown[] | null;
+  createdAt: string;
+};
+
+type TurnOutputBuffer = {
+  delta: string;
+  items: string[];
+};
+
+type TurnWaiter = {
+  resolve: (value: TurnCompletion | PromiseLike<TurnCompletion>) => void;
+  reject: (error?: unknown) => void;
+  turnId: string;
+  timeoutMs: number;
+  timer: NodeJS.Timeout | null;
+  waitingForApproval: boolean;
+  pendingApprovalIds: Set<string>;
+};
+
+type PendingRequest = {
+  method: string;
+  resolve: (value: unknown) => void;
+  reject: (error: Error) => void;
+  timer: NodeJS.Timeout;
+};
+
+type TurnState = {
+  turnId: string;
+  startedAt: string;
+};
+
+type TurnCompletion = {
+  id?: string;
+  status?: string;
+  error?: {
+    message?: string;
+  };
+  [key: string]: unknown;
+};
+
+type ListModelsResponse = {
+  data?: unknown[];
+  nextCursor?: string;
+};
+
+type ThreadResponse = {
+  thread?: {
+    id?: string;
+    turns?: Array<{
+      id?: string;
+      items?: Array<{ type?: string; text?: string }>;
+    }>;
+  };
+};
+
+type TurnStartResponse = {
+  turn?: TurnCompletion;
+};
+
 export class CodexAppClient extends EventEmitter {
-  constructor({ codexBin, codexHomeDir, cwd, sandboxMode, approvalPolicy, turnActivityTimeoutMs }) {
+  codexBin: string;
+  codexHomeDir: string | null;
+  cwd: string;
+  sandboxMode: SandboxMode;
+  approvalPolicy: ApprovalPolicy;
+  model: ModelValue;
+  turnActivityTimeoutMs: number;
+  child: ReturnType<typeof spawn> | null;
+  reader: readline.Interface | null;
+  nextRequestId: number;
+  startPromise: Promise<void> | null;
+  started: boolean;
+  pendingRequests: Map<number, PendingRequest>;
+  pendingApprovals: Map<string, ApprovalRecord>;
+  turnWaiters: Map<string, TurnWaiter>;
+  turnOutput: Map<string, TurnOutputBuffer>;
+  completedTurns: Map<string, TurnCompletion>;
+  activeTurnByThread: Map<string, TurnState>;
+  latestQuotaSnapshot: Record<string, unknown> | null;
+  latestSessionModel: string | null;
+  latestSessionModelUpdatedAt: string | null;
+
+  constructor({
+    codexBin,
+    codexHomeDir,
+    cwd,
+    sandboxMode,
+    approvalPolicy,
+    model,
+    turnActivityTimeoutMs,
+  }: {
+    codexBin?: unknown;
+    codexHomeDir?: unknown;
+    cwd?: unknown;
+    sandboxMode?: unknown;
+    approvalPolicy?: unknown;
+    model?: unknown;
+    turnActivityTimeoutMs?: unknown;
+  }) {
     super();
     this.codexBin = String(codexBin ?? "codex");
     this.codexHomeDir = codexHomeDir ? path.resolve(String(codexHomeDir)) : null;
     this.cwd = path.resolve(String(cwd));
     this.sandboxMode = normalizeSandboxMode(sandboxMode);
     this.approvalPolicy = normalizeApprovalPolicy(approvalPolicy);
+    this.model = normalizeModel(model);
     this.turnActivityTimeoutMs = normalizeTimeout(
       turnActivityTimeoutMs,
       DEFAULT_TURN_ACTIVITY_TIMEOUT_MS,
@@ -34,18 +170,30 @@ export class CodexAppClient extends EventEmitter {
     this.completedTurns = new Map();
     this.activeTurnByThread = new Map();
     this.latestQuotaSnapshot = null;
+    this.latestSessionModel = null;
+    this.latestSessionModelUpdatedAt = null;
   }
 
-  setCwd(value) {
+  setCwd(value: string): void {
     this.cwd = path.resolve(String(value));
   }
 
-  setPolicies({ sandboxMode, approvalPolicy }) {
+  setPolicies(
+    options: {
+      sandboxMode?: SandboxMode;
+      approvalPolicy?: ApprovalPolicy;
+      model?: ModelValue;
+    } = {},
+  ): void {
+    const { sandboxMode, approvalPolicy, model } = options;
     this.sandboxMode = normalizeSandboxMode(sandboxMode ?? this.sandboxMode);
     this.approvalPolicy = normalizeApprovalPolicy(approvalPolicy ?? this.approvalPolicy);
+    if (Object.prototype.hasOwnProperty.call(options, "model")) {
+      this.model = normalizeModel(model);
+    }
   }
 
-  async ensureStarted() {
+  async ensureStarted(): Promise<void> {
     if (this.started) {
       return;
     }
@@ -63,7 +211,7 @@ export class CodexAppClient extends EventEmitter {
     }
   }
 
-  async shutdown() {
+  async shutdown(): Promise<void> {
     this.started = false;
 
     if (this.reader) {
@@ -75,7 +223,9 @@ export class CodexAppClient extends EventEmitter {
     this.child = null;
     if (child) {
       try {
-        child.stdin.end();
+        if (child.stdin) {
+          child.stdin.end();
+        }
       } catch {
         // Ignore stdin close errors.
       }
@@ -89,7 +239,9 @@ export class CodexAppClient extends EventEmitter {
     this.pendingRequests.clear();
 
     for (const { reject, timer } of this.turnWaiters.values()) {
-      clearTimeout(timer);
+      if (timer) {
+        clearTimeout(timer);
+      }
       reject(new Error("Codex app-server process stopped while waiting for turn completion."));
     }
     this.turnWaiters.clear();
@@ -98,9 +250,11 @@ export class CodexAppClient extends EventEmitter {
     this.completedTurns.clear();
     this.turnOutput.clear();
     this.activeTurnByThread.clear();
+    this.latestSessionModel = null;
+    this.latestSessionModelUpdatedAt = null;
   }
 
-  listPendingApprovals({ threadId } = {}) {
+  listPendingApprovals({ threadId }: { threadId?: string } = {}): ApprovalRecord[] {
     const normalizedThreadId = threadId ? String(threadId) : null;
     const values = [...this.pendingApprovals.values()].filter((entry) =>
       normalizedThreadId ? entry.threadId === normalizedThreadId : true,
@@ -109,14 +263,91 @@ export class CodexAppClient extends EventEmitter {
     return values.map((entry) => ({ ...entry }));
   }
 
-  getLatestQuotaSnapshot() {
-    if (!this.latestQuotaSnapshot || typeof this.latestQuotaSnapshot !== "object") {
+  getLatestQuotaSnapshot(): Record<string, unknown> | null {
+    const snapshot: Record<string, unknown> = isRecord(this.latestQuotaSnapshot)
+      ? (JSON.parse(JSON.stringify(this.latestQuotaSnapshot)) as Record<string, unknown>)
+      : {};
+
+    if (this.latestSessionModel) {
+      snapshot.model = this.latestSessionModel;
+      if (!snapshot.updatedAt && this.latestSessionModelUpdatedAt) {
+        snapshot.updatedAt = this.latestSessionModelUpdatedAt;
+      }
+    }
+
+    if (!snapshot || Object.keys(snapshot).length === 0) {
       return null;
     }
-    return JSON.parse(JSON.stringify(this.latestQuotaSnapshot));
+
+    return snapshot;
   }
 
-  async resolveApproval({ approvalId, decision }) {
+  async listModels({ limit = 100 }: { limit?: number } = {}): Promise<
+    Array<{
+      id: string;
+      model: string;
+      displayName: string;
+      description: string;
+      isDefault: boolean;
+    }>
+  > {
+    await this.ensureStarted();
+
+    const safeLimit = Number.isFinite(Number(limit))
+      ? Math.min(Math.max(Number(limit), 1), 500)
+      : 100;
+
+    const models = [];
+    const seen = new Set();
+    let cursor = null;
+    let guard = 0;
+
+    while (guard < 20) {
+      const response: ListModelsResponse = await this.#sendRequest("model/list", {
+        cursor,
+        limit: safeLimit,
+      });
+      const page = Array.isArray(response.data) ? response.data : [];
+
+      for (const entry of page) {
+        const modelEntry = asRecord(entry);
+        const model = String(modelEntry.model ?? modelEntry.id ?? "").trim();
+        if (!model || seen.has(model)) {
+          continue;
+        }
+        seen.add(model);
+        models.push({
+          id: String(modelEntry.id ?? model).trim() || model,
+          model,
+          displayName: String(modelEntry.displayName ?? model).trim() || model,
+          description: String(modelEntry.description ?? "").trim(),
+          isDefault: modelEntry.isDefault === true,
+        });
+      }
+
+      const nextCursor: string = String(response.nextCursor ?? "").trim();
+      if (!nextCursor) {
+        break;
+      }
+      cursor = nextCursor;
+      guard += 1;
+    }
+
+    return models.sort((a, b) => {
+      if (a.isDefault !== b.isDefault) {
+        return a.isDefault ? -1 : 1;
+      }
+      return a.displayName.localeCompare(b.displayName);
+    });
+  }
+
+  async resolveApproval({
+    approvalId,
+    decision,
+  }: {
+    approvalId: string;
+    decision: ApprovalDecision | string;
+  }): Promise<ApprovalRecord & { decision: ApprovalDecision }> {
     const normalizedApprovalId = String(approvalId ?? "").trim();
     if (!normalizedApprovalId) {
       throw new Error("approvalId is required.");
@@ -146,7 +377,7 @@ export class CodexAppClient extends EventEmitter {
     };
   }
 
-  async interruptTurn({ threadId }) {
+  async interruptTurn({ threadId }: { threadId: string | null }): Promise<Record<string, unknown>> {
     await this.ensureStarted();
 
     const normalizedThreadId = String(threadId ?? "").trim();
@@ -216,7 +447,13 @@ export class CodexAppClient extends EventEmitter {
     inputItems = [],
     turnActivityTimeoutMs,
     onThreadReady = null,
-  }) {
+  }: {
+    threadId: string;
+    prompt: string;
+    inputItems?: unknown[];
+    turnActivityTimeoutMs?: number;
+    onThreadReady?: ((threadId: string) => Promise<unknown> | unknown) | null;
+  }): Promise<{ threadId: string; turnId: string; assistantText: string }> {
     await this.ensureStarted();
 
     const text = String(prompt ?? "").trim();
@@ -237,12 +474,12 @@ export class CodexAppClient extends EventEmitter {
         });
       }
     }
-    const response = await this.#sendRequest("turn/start", {
+    const response = await this.#sendRequest<TurnStartResponse>("turn/start", {
       threadId: resolvedThreadId,
       input: normalizedInputItems,
     });
 
-    const turnId = String(response?.turn?.id ?? "").trim();
+    const turnId = String(response.turn?.id ?? "").trim();
     if (!turnId) {
       throw new Error("turn/start did not return a turn id.");
     }
@@ -279,7 +516,7 @@ export class CodexAppClient extends EventEmitter {
     }
   }
 
-  async #startInternal() {
+  async #startInternal(): Promise<void> {
     if (this.codexHomeDir) {
       fs.mkdirSync(this.codexHomeDir, { recursive: true });
     }
@@ -330,7 +567,7 @@ export class CodexAppClient extends EventEmitter {
     await this.#sendNotification("initialized");
   }
 
-  #buildEnvironment() {
+  #buildEnvironment(): NodeJS.ProcessEnv {
     const env = { ...process.env };
     if (this.codexHomeDir) {
       env.CODEX_HOME = this.codexHomeDir;
@@ -338,16 +575,26 @@ export class CodexAppClient extends EventEmitter {
     return env;
   }
 
-  async #ensureThread(threadId) {
+  async #ensureThread(threadId: string): Promise<string> {
     const previousThreadId = String(threadId ?? "").trim();
     if (previousThreadId) {
+      const resumeParams: {
+        threadId: string;
+        cwd: string;
+        approvalPolicy: ApprovalPolicy;
+        sandbox: SandboxMode;
+        model?: string;
+      } = {
+        threadId: previousThreadId,
+        cwd: normalizeCliPath(this.cwd),
+        approvalPolicy: this.approvalPolicy,
+        sandbox: this.sandboxMode,
+      };
+      if (this.model) {
+        resumeParams.model = this.model;
+      }
       try {
-        await this.#sendRequest("thread/resume", {
-          threadId: previousThreadId,
-          cwd: normalizeCliPath(this.cwd),
-          approvalPolicy: this.approvalPolicy,
-          sandbox: this.sandboxMode,
-        });
+        await this.#sendRequest("thread/resume", resumeParams);
         return previousThreadId;
       } catch (error) {
         this.emit("warning", {
@@ -358,50 +605,75 @@ export class CodexAppClient extends EventEmitter {
       }
     }
 
-    const started = await this.#sendRequest("thread/start", {
+    const startParams: {
+      cwd: string;
+      approvalPolicy: ApprovalPolicy;
+      sandbox: SandboxMode;
+      experimentalRawEvents: boolean;
+      model?: string;
+    } = {
       cwd: normalizeCliPath(this.cwd),
       approvalPolicy: this.approvalPolicy,
       sandbox: this.sandboxMode,
       experimentalRawEvents: false,
-    });
-    const nextThreadId = String(started?.thread?.id ?? "").trim();
+    };
+    if (this.model) {
+      startParams.model = this.model;
+    }
+
+    const started = await this.#sendRequest<ThreadResponse>("thread/start", startParams);
+    const nextThreadId = String(started.thread?.id ?? "").trim();
     if (!nextThreadId) {
       throw new Error("thread/start did not return a thread id.");
     }
     return nextThreadId;
   }
 
-  async #resolveAssistantText(threadId, turnId) {
+  async #resolveAssistantText(threadId: string, turnId: string): Promise<string> {
     const key = makeTurnKey(threadId, turnId);
     const buffered = this.turnOutput.get(key);
     if (buffered?.items?.length) {
-      return buffered.items[buffered.items.length - 1];
+      const lastBufferedItem = buffered.items[buffered.items.length - 1];
+      if (lastBufferedItem) {
+        return lastBufferedItem;
+      }
     }
     if (buffered?.delta?.trim()) {
       return buffered.delta.trim();
     }
 
-    const read = await this.#sendRequest("thread/read", {
+    const read = await this.#sendRequest<ThreadResponse>("thread/read", {
       threadId,
       includeTurns: true,
     });
-    const turns = Array.isArray(read?.thread?.turns) ? read.thread.turns : [];
+    const turns = Array.isArray(read.thread?.turns) ? read.thread.turns : [];
     const targetTurn = turns.find((entry) => entry.id === turnId);
     if (!targetTurn || !Array.isArray(targetTurn.items)) {
       return "";
     }
 
     const messages = targetTurn.items
-      .filter((entry) => entry?.type === "agentMessage" && typeof entry.text === "string")
+      .filter(
+        (
+          entry,
+        ): entry is {
+          type: string;
+          text: string;
+        } => entry.type === "agentMessage" && typeof entry.text === "string",
+      )
       .map((entry) => entry.text.trim())
       .filter(Boolean);
     if (messages.length === 0) {
       return "";
     }
-    return messages[messages.length - 1];
+    return messages[messages.length - 1] ?? "";
   }
 
-  #waitForTurnCompletion(threadId, turnId, timeoutMs) {
+  #waitForTurnCompletion(
+    threadId: string,
+    turnId: string,
+    timeoutMs: number,
+  ): Promise<TurnCompletion> {
     const key = makeTurnKey(threadId, turnId);
     const cached = this.completedTurns.get(key);
     if (cached) {
@@ -410,7 +682,7 @@ export class CodexAppClient extends EventEmitter {
     }
 
     return new Promise((resolve, reject) => {
-      const waiter = {
+      const waiter: TurnWaiter = {
         resolve,
         reject,
         turnId: String(turnId),
@@ -424,7 +696,7 @@ export class CodexAppClient extends EventEmitter {
     });
   }
 
-  #armTurnActivityTimeout(turnKey) {
+  #armTurnActivityTimeout(turnKey: string): void {
     const waiter = this.turnWaiters.get(turnKey);
     if (!waiter) {
       return;
@@ -449,7 +721,7 @@ export class CodexAppClient extends EventEmitter {
     }, waiter.timeoutMs);
   }
 
-  #touchTurn(threadId, turnId) {
+  #touchTurn(threadId: string, turnId: string): void {
     const key = makeTurnKey(threadId, turnId);
     if (!this.turnWaiters.has(key)) {
       return;
@@ -457,7 +729,7 @@ export class CodexAppClient extends EventEmitter {
     this.#armTurnActivityTimeout(key);
   }
 
-  #pauseTurnForApproval(turnKey, approvalId) {
+  #pauseTurnForApproval(turnKey: string, approvalId: string): void {
     const waiter = this.turnWaiters.get(turnKey);
     if (!waiter) {
       return;
@@ -471,7 +743,7 @@ export class CodexAppClient extends EventEmitter {
     }
   }
 
-  #resumeTurnAfterApproval(turnKey, approvalId) {
+  #resumeTurnAfterApproval(turnKey: string, approvalId: string): void {
     const waiter = this.turnWaiters.get(turnKey);
     if (!waiter) {
       return;
@@ -486,7 +758,7 @@ export class CodexAppClient extends EventEmitter {
     this.#armTurnActivityTimeout(turnKey);
   }
 
-  #clearTurnApprovalTracking(turnKey) {
+  #clearTurnApprovalTracking(turnKey: string): void {
     const waiter = this.turnWaiters.get(turnKey);
     if (!waiter) {
       return;
@@ -495,12 +767,21 @@ export class CodexAppClient extends EventEmitter {
     waiter.pendingApprovalIds.clear();
   }
 
-  async #sendRequest(method, params, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS) {
+  async #sendRequest<T = unknown>(
+    method: string,
+    params?: unknown,
+    timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+  ): Promise<T> {
     await this.ensureStarted();
     const requestId = this.nextRequestId;
     this.nextRequestId += 1;
 
-    const message = {
+    const message: {
+      jsonrpc: "2.0";
+      id: number;
+      method: string;
+      params?: unknown;
+    } = {
       jsonrpc: "2.0",
       id: requestId,
       method,
@@ -509,7 +790,7 @@ export class CodexAppClient extends EventEmitter {
       message.params = params;
     }
 
-    return new Promise((resolve, reject) => {
+    return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pendingRequests.delete(requestId);
         reject(new Error(`Request '${method}' timed out after ${timeoutMs}ms.`));
@@ -517,7 +798,7 @@ export class CodexAppClient extends EventEmitter {
 
       this.pendingRequests.set(requestId, {
         method,
-        resolve,
+        resolve: resolve as (value: unknown) => void,
         reject,
         timer,
       });
@@ -532,9 +813,13 @@ export class CodexAppClient extends EventEmitter {
     });
   }
 
-  async #sendNotification(method, params) {
+  async #sendNotification(method: string, params?: unknown): Promise<void> {
     await this.ensureStarted();
-    const message = {
+    const message: {
+      jsonrpc: "2.0";
+      method: string;
+      params?: unknown;
+    } = {
       jsonrpc: "2.0",
       method,
     };
@@ -544,9 +829,22 @@ export class CodexAppClient extends EventEmitter {
     this.#writeMessage(message);
   }
 
-  async #sendResponse({ id, result, error }) {
+  async #sendResponse({
+    id,
+    result,
+    error,
+  }: {
+    id: string | number;
+    result?: unknown;
+    error?: unknown;
+  }): Promise<void> {
     await this.ensureStarted();
-    const message = {
+    const message: {
+      jsonrpc: "2.0";
+      id: string | number;
+      result?: unknown;
+      error?: unknown;
+    } = {
       jsonrpc: "2.0",
       id,
     };
@@ -558,20 +856,20 @@ export class CodexAppClient extends EventEmitter {
     this.#writeMessage(message);
   }
 
-  #writeMessage(value) {
+  #writeMessage(value: unknown): void {
     if (!this.child || !this.child.stdin) {
       throw new Error("Codex app-server process is not available.");
     }
     this.child.stdin.write(`${JSON.stringify(value)}\n`);
   }
 
-  #handleStdoutLine(rawLine) {
+  #handleStdoutLine(rawLine: string): void {
     const line = String(rawLine ?? "").trim();
     if (!line) {
       return;
     }
 
-    let message;
+    let message: unknown;
     try {
       message = JSON.parse(line);
     } catch {
@@ -579,54 +877,62 @@ export class CodexAppClient extends EventEmitter {
     }
 
     this.#captureQuotaSnapshot(message);
+    if (!isRecord(message)) {
+      return;
+    }
 
-    if (
-      message &&
-      typeof message === "object" &&
-      "id" in message &&
-      ("result" in message || "error" in message) &&
-      !message.method
-    ) {
+    if ("id" in message && ("result" in message || "error" in message) && !("method" in message)) {
       this.#handleResponse(message);
       return;
     }
 
-    if (
-      message &&
-      typeof message === "object" &&
-      "id" in message &&
-      typeof message.method === "string"
-    ) {
+    if ("id" in message && typeof message.method === "string") {
       void this.#handleServerRequest(message);
       return;
     }
 
-    if (message && typeof message === "object" && typeof message.method === "string") {
+    if (typeof message.method === "string") {
       this.#handleNotification(message);
     }
   }
 
-  #captureQuotaSnapshot(message) {
+  #captureQuotaSnapshot(message: unknown): void {
+    const sessionModel =
+      extractThreadLifecycleModel(message) || extractSessionConfiguredModel(message);
+    if (sessionModel) {
+      this.latestSessionModel = sessionModel;
+      this.latestSessionModelUpdatedAt = new Date().toISOString();
+    }
+
     const snapshot = extractQuotaSnapshot(message);
     if (!snapshot) {
       return;
     }
-    this.latestQuotaSnapshot = snapshot;
-    this.emit("quota", snapshot);
+    const snapshotRecord = JSON.parse(JSON.stringify(snapshot)) as Record<string, unknown>;
+    if (this.latestSessionModel) {
+      snapshotRecord.model = this.latestSessionModel;
+    }
+    this.latestQuotaSnapshot = snapshotRecord;
+    this.emit("quota", snapshotRecord);
   }
 
-  #handleResponse(message) {
-    const pending = this.pendingRequests.get(message.id);
+  #handleResponse(message: Record<string, unknown>): void {
+    const requestId = toRequestId(message.id);
+    if (requestId === null) {
+      return;
+    }
+    const pending = this.pendingRequests.get(requestId);
     if (!pending) {
       return;
     }
-    this.pendingRequests.delete(message.id);
+    this.pendingRequests.delete(requestId);
     clearTimeout(pending.timer);
 
     if (message.error) {
+      const errorPayload = asRecord(message.error);
       const details =
-        typeof message.error?.message === "string"
-          ? message.error.message
+        typeof errorPayload.message === "string"
+          ? errorPayload.message
           : JSON.stringify(message.error);
       pending.reject(new Error(details || `Codex request '${pending.method}' failed.`));
       return;
@@ -635,18 +941,22 @@ export class CodexAppClient extends EventEmitter {
     pending.resolve(message.result);
   }
 
-  async #handleServerRequest(message) {
+  async #handleServerRequest(message: Record<string, unknown>): Promise<void> {
     const method = String(message.method);
+    const serverRequestId = toRpcId(message.id);
+    if (serverRequestId === null) {
+      return;
+    }
 
     if (
       method === "item/commandExecution/requestApproval" ||
       method === "item/fileChange/requestApproval"
     ) {
-      const params = message.params ?? {};
-      this.#touchTurn(params.threadId, params.turnId);
-      const approval = {
+      const params = asRecord(message.params);
+      this.#touchTurn(String(params.threadId ?? ""), String(params.turnId ?? ""));
+      const approval: ApprovalRecord = {
         id: createApprovalId(),
-        serverRequestId: message.id,
+        serverRequestId,
         kind:
           method === "item/commandExecution/requestApproval" ? "commandExecution" : "fileChange",
         method,
@@ -666,7 +976,7 @@ export class CodexAppClient extends EventEmitter {
     }
 
     await this.#sendResponse({
-      id: message.id,
+      id: serverRequestId,
       error: {
         code: -32601,
         message: `Method '${method}' is not supported by telegram-codex-bridge.`,
@@ -674,13 +984,15 @@ export class CodexAppClient extends EventEmitter {
     });
   }
 
-  #handleNotification(message) {
+  #handleNotification(message: Record<string, unknown>): void {
     const method = String(message.method ?? "");
-    const params = message.params ?? {};
+    const params = asRecord(message.params);
 
     if (method === "item/agentMessage/delta") {
-      this.#touchTurn(params.threadId, params.turnId);
-      const key = makeTurnKey(params.threadId, params.turnId);
+      const threadId = String(params.threadId ?? "");
+      const turnId = String(params.turnId ?? "");
+      this.#touchTurn(threadId, turnId);
+      const key = makeTurnKey(threadId, turnId);
       const buffer = this.turnOutput.get(key) ?? { delta: "", items: [] };
       buffer.delta += String(params.delta ?? "");
       this.turnOutput.set(key, buffer);
@@ -688,9 +1000,11 @@ export class CodexAppClient extends EventEmitter {
     }
 
     if (method === "item/completed") {
-      this.#touchTurn(params.threadId, params.turnId);
-      const key = makeTurnKey(params.threadId, params.turnId);
-      const item = params.item ?? {};
+      const threadId = String(params.threadId ?? "");
+      const turnId = String(params.turnId ?? "");
+      this.#touchTurn(threadId, turnId);
+      const key = makeTurnKey(threadId, turnId);
+      const item = asRecord(params.item);
       if (item.type === "agentMessage" && typeof item.text === "string") {
         const buffer = this.turnOutput.get(key) ?? { delta: "", items: [] };
         buffer.items.push(item.text.trim());
@@ -700,13 +1014,17 @@ export class CodexAppClient extends EventEmitter {
     }
 
     if (method === "turn/completed") {
-      const turn = params.turn;
-      const key = makeTurnKey(params.threadId, turn?.id);
+      const threadId = String(params.threadId ?? "");
+      const turn = asRecord(params.turn) as TurnCompletion;
+      const turnId = String(turn.id ?? "");
+      const key = makeTurnKey(threadId, turnId);
       this.#clearTurnApprovalTracking(key);
       const waiter = this.turnWaiters.get(key);
       if (waiter) {
         this.turnWaiters.delete(key);
-        clearTimeout(waiter.timer);
+        if (waiter.timer) {
+          clearTimeout(waiter.timer);
+        }
         waiter.resolve(turn);
       } else {
         this.completedTurns.set(key, turn);
@@ -717,12 +1035,15 @@ export class CodexAppClient extends EventEmitter {
     if (method === "error") {
       this.emit("warning", {
         type: "notification_error",
-        error: params?.message ? String(params.message) : "Unknown app-server error notification.",
+        error:
+          typeof params.message === "string"
+            ? params.message
+            : "Unknown app-server error notification.",
       });
     }
   }
 
-  #handleProcessFailure(error) {
+  #handleProcessFailure(error: unknown): void {
     const reason = error instanceof Error ? error : new Error(String(error));
     if (!this.started && !this.startPromise) {
       return;
@@ -746,7 +1067,9 @@ export class CodexAppClient extends EventEmitter {
     this.pendingRequests.clear();
 
     for (const { reject, timer } of this.turnWaiters.values()) {
-      clearTimeout(timer);
+      if (timer) {
+        clearTimeout(timer);
+      }
       reject(reason);
     }
     this.turnWaiters.clear();
@@ -754,337 +1077,7 @@ export class CodexAppClient extends EventEmitter {
     this.turnOutput.clear();
     this.completedTurns.clear();
     this.activeTurnByThread.clear();
+    this.latestSessionModel = null;
+    this.latestSessionModelUpdatedAt = null;
   }
-}
-
-function normalizeSandboxMode(value) {
-  const mode = String(value ?? "danger-full-access")
-    .trim()
-    .toLowerCase();
-  if (mode === "read-only" || mode === "workspace-write" || mode === "danger-full-access") {
-    return mode;
-  }
-  return "danger-full-access";
-}
-
-function normalizeApprovalPolicy(value) {
-  const mode = String(value ?? "never")
-    .trim()
-    .toLowerCase();
-  if (mode === "untrusted" || mode === "on-failure" || mode === "on-request" || mode === "never") {
-    return mode;
-  }
-  return "never";
-}
-
-function normalizeApprovalDecision(value) {
-  const decision = String(value ?? "")
-    .trim()
-    .toLowerCase();
-  if (decision === "accept" || decision === "approve" || decision === "approved") {
-    return "accept";
-  }
-  if (decision === "acceptforsession" || decision === "always") {
-    return "acceptForSession";
-  }
-  if (
-    decision === "decline" ||
-    decision === "deny" ||
-    decision === "denied" ||
-    decision === "reject"
-  ) {
-    return "decline";
-  }
-  if (decision === "cancel" || decision === "abort") {
-    return "cancel";
-  }
-  throw new Error("decision must be one of: accept, acceptForSession, decline, cancel.");
-}
-
-function normalizeTimeout(value, fallback) {
-  const parsed = Number.parseInt(String(value ?? fallback), 10);
-  if (!Number.isFinite(parsed) || parsed < 1_000) {
-    return fallback;
-  }
-  return parsed;
-}
-
-function normalizeCliPath(value) {
-  if (process.platform !== "win32") {
-    return value;
-  }
-  return String(value).replace(/\\/g, "/");
-}
-
-function makeTurnKey(threadId, turnId) {
-  return `${String(threadId ?? "")}::${String(turnId ?? "")}`;
-}
-
-function createApprovalId() {
-  return `apr_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-}
-
-function annotateSpawnError(error, command) {
-  if (!error || typeof error !== "object") {
-    return error;
-  }
-
-  if (error.code === "ENOENT") {
-    return new Error(
-      [
-        `Cannot execute Codex binary '${command}' (ENOENT).`,
-        "Set CODEX_BIN to a valid executable (example: C:\\Users\\<you>\\...\\codex.exe) or ensure it is on PATH.",
-      ].join("\n"),
-    );
-  }
-
-  if (process.platform === "win32" && error.code === "EPERM") {
-    return new Error(
-      [
-        `Cannot execute Codex binary '${command}' (EPERM).`,
-        "On Windows, verify CODEX_BIN points to an executable and that permissions allow process spawn.",
-      ].join("\n"),
-    );
-  }
-
-  return error;
-}
-
-function normalizeTurnInputItems({ prompt, inputItems }) {
-  const items = [];
-  const text = String(prompt ?? "").trim();
-  if (text) {
-    items.push({
-      type: "text",
-      text,
-    });
-  }
-
-  if (Array.isArray(inputItems)) {
-    for (const entry of inputItems) {
-      const type = String(entry?.type ?? "")
-        .trim()
-        .toLowerCase();
-
-      if (type === "image") {
-        const url = String(entry?.url ?? "").trim();
-        if (!url) {
-          throw new Error("Image input item requires a non-empty url.");
-        }
-        items.push({
-          type: "image",
-          url,
-        });
-        continue;
-      }
-
-      if (type === "localimage") {
-        const localPath = String(entry?.path ?? "").trim();
-        if (!localPath) {
-          throw new Error("localImage input item requires a non-empty path.");
-        }
-        items.push({
-          type: "localImage",
-          path: localPath,
-        });
-      }
-    }
-  }
-
-  if (items.length === 0) {
-    throw new Error("Prompt cannot be empty.");
-  }
-  return items;
-}
-
-function extractQuotaSnapshot(message) {
-  const tokenCountPayload = extractTokenCountPayload(message);
-  const rateLimits = tokenCountPayload?.rate_limits ?? extractRateLimitsPayload(message);
-  if (!rateLimits || typeof rateLimits !== "object") {
-    return null;
-  }
-
-  const primaryUsedPercent = readUsedPercent(rateLimits?.primary);
-  const secondaryUsedPercent = readUsedPercent(rateLimits?.secondary);
-  if (!Number.isFinite(primaryUsedPercent) && !Number.isFinite(secondaryUsedPercent)) {
-    return null;
-  }
-
-  const nowIso = new Date().toISOString();
-  return {
-    updatedAt: nowIso,
-    primary: normalizeRateLimitWindow(rateLimits?.primary),
-    secondary: normalizeRateLimitWindow(rateLimits?.secondary),
-    credits: normalizeCredits(rateLimits?.credits),
-    usage: normalizeTokenUsage(tokenCountPayload?.info),
-    rawType: String(tokenCountPayload?.type ?? "rate_limits"),
-  };
-}
-
-function extractTokenCountPayload(message) {
-  if (!message || typeof message !== "object") {
-    return null;
-  }
-
-  if (message.type === "event_msg" && message.payload?.type === "token_count") {
-    return message.payload;
-  }
-
-  if (message.type === "token_count") {
-    return message;
-  }
-
-  if (message.payload?.type === "token_count") {
-    return message.payload;
-  }
-
-  if (message.method === "event_msg") {
-    if (message.params?.payload?.type === "token_count") {
-      return message.params.payload;
-    }
-    if (message.params?.type === "token_count") {
-      return message.params;
-    }
-  }
-
-  if (message.method === "codex/event/token_count") {
-    if (message.params?.msg?.type === "token_count") {
-      return message.params.msg;
-    }
-    if (message.params?.type === "token_count") {
-      return message.params;
-    }
-  }
-
-  if (message.method === "token_count") {
-    if (message.params && typeof message.params === "object") {
-      return {
-        type: "token_count",
-        ...message.params,
-      };
-    }
-  }
-
-  if (message.params?.msg?.type === "token_count") {
-    return message.params.msg;
-  }
-
-  return null;
-}
-
-function extractRateLimitsPayload(message) {
-  if (!message || typeof message !== "object") {
-    return null;
-  }
-
-  if (message.method === "account/rateLimits/updated") {
-    const candidate = message.params?.rateLimits;
-    if (candidate && typeof candidate === "object") {
-      return candidate;
-    }
-  }
-
-  return null;
-}
-
-function normalizeRateLimitWindow(value) {
-  const input = value && typeof value === "object" ? value : {};
-  const usedPercent = readUsedPercent(input);
-  const normalizedUsedPercent = Number.isFinite(usedPercent) ? clampPercent(usedPercent) : null;
-
-  return {
-    usedPercent: normalizedUsedPercent,
-    remainingPercent:
-      normalizedUsedPercent === null ? null : clampPercent(100 - normalizedUsedPercent),
-    windowMinutes: readWindowMinutes(input),
-    resetsAt: readResetsAt(input),
-  };
-}
-
-function normalizeCredits(value) {
-  const input = value && typeof value === "object" ? value : {};
-  return {
-    hasCredits: toNullableBoolean(input.has_credits ?? input.hasCredits),
-    unlimited: toNullableBoolean(input.unlimited),
-    balance: toFiniteNumber(input.balance),
-  };
-}
-
-function normalizeTokenUsage(info) {
-  const usage = extractUsageBlock(info);
-  if (!usage) {
-    return null;
-  }
-  return {
-    inputTokens: toFiniteNumber(usage.input_tokens ?? usage.inputTokens),
-    cachedInputTokens: toFiniteNumber(usage.cached_input_tokens ?? usage.cachedInputTokens),
-    outputTokens: toFiniteNumber(usage.output_tokens ?? usage.outputTokens),
-    reasoningOutputTokens: toFiniteNumber(
-      usage.reasoning_output_tokens ?? usage.reasoningOutputTokens,
-    ),
-    totalTokens: toFiniteNumber(usage.total_tokens ?? usage.totalTokens),
-    modelContextWindow: toFiniteNumber(info?.model_context_window ?? info?.modelContextWindow),
-  };
-}
-
-function extractUsageBlock(info) {
-  if (!info || typeof info !== "object") {
-    return null;
-  }
-
-  const candidate = info.total_token_usage ?? info.totalTokenUsage ?? info.total;
-  if (!candidate || typeof candidate !== "object") {
-    return null;
-  }
-
-  return candidate;
-}
-
-function readUsedPercent(value) {
-  const input = value && typeof value === "object" ? value : {};
-  return toFiniteNumber(input.used_percent ?? input.usedPercent);
-}
-
-function readWindowMinutes(value) {
-  const input = value && typeof value === "object" ? value : {};
-  return toFiniteNumber(input.window_minutes ?? input.windowDurationMins);
-}
-
-function readResetsAt(value) {
-  const input = value && typeof value === "object" ? value : {};
-  return toFiniteNumber(input.resets_at ?? input.resetsAt);
-}
-
-function toFiniteNumber(value) {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : null;
-}
-
-function toNullableBoolean(value) {
-  if (value === true) {
-    return true;
-  }
-  if (value === false) {
-    return false;
-  }
-  return null;
-}
-
-function clampPercent(value) {
-  const n = Number(value);
-  if (!Number.isFinite(n)) {
-    return null;
-  }
-  if (n < 0) {
-    return 0;
-  }
-  if (n > 100) {
-    return 100;
-  }
-  return n;
-}
-
-function sanitizeError(error) {
-  const raw = error instanceof Error ? error.message : String(error);
-  return raw.split(/\r?\n/).slice(0, 12).join("\n");
 }

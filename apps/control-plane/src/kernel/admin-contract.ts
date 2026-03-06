@@ -1,11 +1,10 @@
-// @ts-nocheck
 const BOT_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
 export const DEFAULT_ADMIN_BOT_ID = "admin_agent";
 export const DEFAULT_ADMIN_TOKEN_ENV = "TELEGRAM_TOKEN_ADMIN";
 export const DEFAULT_ADMIN_CHANNEL_ID = "telegram_admin";
 
-export function normalizeAdminBotId(value) {
+export function normalizeAdminBotId(value: unknown): string {
   const id = String(value ?? DEFAULT_ADMIN_BOT_ID).trim();
   if (!BOT_ID_PATTERN.test(id)) {
     throw new Error("ADMIN_BOT_ID has invalid format.");
@@ -13,7 +12,7 @@ export function normalizeAdminBotId(value) {
   return id;
 }
 
-export function normalizeAdminTokenEnv(value) {
+export function normalizeAdminTokenEnv(value: unknown): string {
   const name = String(value ?? DEFAULT_ADMIN_TOKEN_ENV).trim();
   if (!name) {
     throw new Error("ADMIN_TELEGRAM_TOKEN_ENV cannot be empty.");
@@ -21,7 +20,13 @@ export function normalizeAdminTokenEnv(value) {
   return name;
 }
 
-export function buildAdminAgentDefinition({ botId, tokenEnvName }) {
+export function buildAdminAgentDefinition({
+  botId,
+  tokenEnvName,
+}: {
+  botId: unknown;
+  tokenEnvName: unknown;
+}) {
   const normalizedBotId = normalizeAdminBotId(botId);
   const normalizedTokenEnv = normalizeAdminTokenEnv(tokenEnvName);
   return {

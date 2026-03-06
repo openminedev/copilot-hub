@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { CAPABILITY_HOOKS } from "./capability-manager.js";
 import { KERNEL_VERSION } from "./kernel-version.js";
 

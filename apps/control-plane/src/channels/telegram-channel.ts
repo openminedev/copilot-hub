@@ -1,17 +1,118 @@
-// @ts-nocheck
-import { Bot } from "grammy";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { Bot, type Api, type Context } from "grammy";
+import { formatCodexQuotaLine } from "@copilot-hub/core/codex-quota-display";
 import {
   maybeHandleHubOpsCallback,
   maybeHandleHubOpsCommand,
   maybeHandleHubOpsFollowUp,
 } from "./hub-ops-commands.js";
 
+type TelegramChannelConfig = {
+  kind?: unknown;
+  id?: string;
+  token?: string;
+  allowedChatIds?: string | Array<string | number>;
+};
+
+type ThreadState = {
+  turnCount?: number;
+  sessionId?: string;
+  updatedAt?: string;
+};
+
+type PendingApproval = {
+  id: string;
+  kind: string;
+  command?: string;
+  cwd?: string;
+  reason?: string;
+  threadId?: string;
+  metadata?: {
+    chatId?: string;
+  };
+};
+
+type ApprovalDecision = "accept" | "acceptForSession" | "decline";
+
+type InterruptResult = {
+  interrupted?: boolean;
+  method?: string;
+  reason?: string;
+  error?: string;
+};
+
+type ActiveTurn = {
+  threadId: string;
+  token: string;
+};
+
+type TurnControlState = {
+  token: string;
+  threadId: string;
+  messageId: number;
+};
+
+type RuntimeLike = {
+  runtimeId?: string;
+  runtimeName?: string;
+  resolveThreadIdForChannel: (args: {
+    channelKind: string;
+    channelId: string;
+    externalUserId: string;
+  }) => Promise<string>;
+  resetThread: (threadId: string) => Promise<unknown>;
+  getThread: (threadId: string) => Promise<{ thread: ThreadState }>;
+  buildWebBotUrl: () => string;
+  listPendingApprovals: (threadId: string) => Promise<PendingApproval[]>;
+  resolvePendingApproval: (args: {
+    threadId: string;
+    approvalId: string;
+    decision: ApprovalDecision;
+  }) => Promise<unknown>;
+  interruptThread: (threadId: string) => Promise<InterruptResult | null>;
+  sendTurn: (args: {
+    threadId: string;
+    prompt: string;
+    source?: string;
+    metadata?: Record<string, unknown>;
+  }) => Promise<{ assistantText?: string }>;
+  getProviderUsage?: () => Promise<unknown>;
+};
+
+type CodexUsageSnapshot = {
+  primary?: { remainingPercent?: number | null; resetsAt?: number | null } | null;
+  secondary?: { remainingPercent?: number | null; resetsAt?: number | null } | null;
+} | null;
+
+const CODEX_USAGE_CACHE_TTL_MS = 60_000;
+let cachedCodexUsage: { expiresAt: number; snapshot: CodexUsageSnapshot } | null = null;
+
 export class TelegramChannel {
-  constructor({ channelConfig, runtime }) {
+  kind: "telegram";
+  id: string;
+  config: TelegramChannelConfig;
+  runtime: RuntimeLike;
+  allowedChatIds: Set<string>;
+  bot: Bot | null;
+  running: boolean;
+  error: string | null;
+  activeTurnsByChat: Map<string, ActiveTurn>;
+  turnControlByChat: Map<string, TurnControlState>;
+  nextTurnToken: number;
+
+  constructor({
+    channelConfig,
+    runtime,
+  }: {
+    channelConfig: TelegramChannelConfig;
+    runtime: unknown;
+  }) {
     this.kind = "telegram";
     this.id = String(channelConfig.id ?? "telegram");
     this.config = channelConfig;
-    this.runtime = runtime;
+    this.runtime = toRuntimeLike(runtime);
     this.allowedChatIds = normalizeAllowedChatIds(channelConfig.allowedChatIds);
     this.bot = null;
     this.running = false;
@@ -21,7 +122,7 @@ export class TelegramChannel {
     this.nextTurnToken = 1;
   }
 
-  async start() {
+  async start(): Promise<{ kind: string; id: string; running: boolean; error: string | null }> {
     if (this.running) {
       return this.getStatus();
     }
@@ -55,7 +156,7 @@ export class TelegramChannel {
     return this.getStatus();
   }
 
-  async stop() {
+  async stop(): Promise<{ kind: string; id: string; running: boolean; error: string | null }> {
     if (this.bot) {
       try {
         this.bot.stop();
@@ -70,11 +171,11 @@ export class TelegramChannel {
     return this.getStatus();
   }
 
-  async shutdown() {
+  async shutdown(): Promise<void> {
     await this.stop();
   }
 
-  getStatus() {
+  getStatus(): { kind: string; id: string; running: boolean; error: string | null } {
     return {
       kind: this.kind,
       id: this.id,
@@ -83,7 +184,7 @@ export class TelegramChannel {
     };
   }
 
-  async notifyApproval(approval) {
+  async notifyApproval(approval: PendingApproval): Promise<void> {
     const chatId = String(approval?.metadata?.chatId ?? "").trim();
     if (!chatId || !this.bot) {
       return;
@@ -108,7 +209,7 @@ export class TelegramChannel {
     await sendChunkedMessage(this.bot.api, chatId, lines.join("\n"));
   }
 
-  #attachHandlers(bot) {
+  #attachHandlers(bot: Bot): void {
     bot.command("start", async (context) => {
       const chatId = String(context.chat.id);
       if (!this.#isAllowedChat(chatId)) {
@@ -276,7 +377,7 @@ export class TelegramChannel {
       }
 
       const hubHandled = await maybeHandleHubOpsCallback({
-        ctx: context,
+        ctx: context as unknown as Parameters<typeof maybeHandleHubOpsCallback>[0]["ctx"],
       });
       if (hubHandled) {
         return;
@@ -324,7 +425,7 @@ export class TelegramChannel {
 
       if (text.startsWith("/")) {
         const opsHandled = await maybeHandleHubOpsCommand({
-          ctx: context,
+          ctx: context as unknown as Parameters<typeof maybeHandleHubOpsCommand>[0]["ctx"],
           runtime: this.runtime,
           channelId: this.id,
         });
@@ -336,7 +437,7 @@ export class TelegramChannel {
       }
 
       const opsFlowHandled = await maybeHandleHubOpsFollowUp({
-        ctx: context,
+        ctx: context as unknown as Parameters<typeof maybeHandleHubOpsFollowUp>[0]["ctx"],
         runtime: this.runtime,
         channelId: this.id,
       });
@@ -380,7 +481,15 @@ export class TelegramChannel {
     });
   }
 
-  async #processTurn({ chatId, threadId, prompt }) {
+  async #processTurn({
+    chatId,
+    threadId,
+    prompt,
+  }: {
+    chatId: string;
+    threadId: string;
+    prompt: string;
+  }): Promise<void> {
     if (!this.bot) {
       return;
     }
@@ -424,8 +533,12 @@ export class TelegramChannel {
     }
   }
 
-  async #handleStopTurn(context) {
-    const chatId = String(context.chat.id);
+  async #handleStopTurn(context: Context): Promise<void> {
+    const chatId = getContextChatId(context);
+    if (!chatId) {
+      await context.reply("Unable to resolve chat.");
+      return;
+    }
     if (!this.#isAllowedChat(chatId)) {
       await context.reply("Chat not allowed for this bot.");
       return;
@@ -440,14 +553,18 @@ export class TelegramChannel {
     await context.reply(formatInterruptResult(result));
   }
 
-  async #handleSteer(context) {
-    const chatId = String(context.chat.id);
+  async #handleSteer(context: Context): Promise<void> {
+    const chatId = getContextChatId(context);
+    if (!chatId) {
+      await context.reply("Unable to resolve chat.");
+      return;
+    }
     if (!this.#isAllowedChat(chatId)) {
       await context.reply("Chat not allowed for this bot.");
       return;
     }
 
-    const instruction = extractCommandTail(context.message.text);
+    const instruction = extractCommandTail(getContextMessageText(context));
     const threadId = await this.runtime.resolveThreadIdForChannel({
       channelKind: this.kind,
       channelId: this.id,
@@ -468,7 +585,7 @@ export class TelegramChannel {
     });
   }
 
-  #markActiveTurn(chatId, threadId) {
+  #markActiveTurn(chatId: string, threadId: string): string {
     const token = `turn_${Date.now()}_${this.nextTurnToken++}`;
     this.activeTurnsByChat.set(String(chatId), {
       threadId: String(threadId),
@@ -477,7 +594,7 @@ export class TelegramChannel {
     return token;
   }
 
-  #clearActiveTurn(chatId, token) {
+  #clearActiveTurn(chatId: string, token: string): void {
     const key = String(chatId);
     const current = this.activeTurnsByChat.get(key);
     if (!current) {
@@ -489,11 +606,21 @@ export class TelegramChannel {
     this.activeTurnsByChat.delete(key);
   }
 
-  #getActiveTurn(chatId) {
+  #getActiveTurn(chatId: string): ActiveTurn | null {
     return this.activeTurnsByChat.get(String(chatId)) ?? null;
   }
 
-  async #applySteerInstruction({ chatId, threadId, prompt, mode = "command_steer" }) {
+  async #applySteerInstruction({
+    chatId,
+    threadId,
+    prompt,
+    mode = "command_steer",
+  }: {
+    chatId: string;
+    threadId: string;
+    prompt: string;
+    mode?: "auto_message" | "command_steer";
+  }): Promise<void> {
     const nextPrompt = String(prompt ?? "").trim();
     if (!nextPrompt) {
       if (this.bot) {
@@ -551,7 +678,7 @@ export class TelegramChannel {
     });
   }
 
-  async #openTurnControls(chatId, threadId, token) {
+  async #openTurnControls(chatId: string, threadId: string, token: string): Promise<void> {
     if (!this.bot) {
       return;
     }
@@ -559,9 +686,9 @@ export class TelegramChannel {
     const key = String(chatId);
     await this.#closeTurnControls(chatId, null, null);
     try {
-      const quotaLine = await resolveCodexQuotaLine(this.runtime);
-      const inProgressText = quotaLine
-        ? ["Generation in progress.", quotaLine].join("\n")
+      const quota = await resolveCodexQuotaLine(this.runtime);
+      const inProgressText = quota.line
+        ? ["Generation in progress.", quota.line].join("\n")
         : "Generation in progress.";
       const sent = await this.bot.api.sendMessage(chatId, inProgressText, {
         reply_markup: buildTurnControlKeyboard(token),
@@ -577,18 +704,18 @@ export class TelegramChannel {
     }
   }
 
-  #scheduleTurnControlQuotaRefresh(chatId, token, attempt) {
+  #scheduleTurnControlQuotaRefresh(chatId: string, token: string, attempt: number): void {
     const safeAttempt = Number.isFinite(attempt) ? Number(attempt) : 1;
-    if (safeAttempt > 4) {
+    if (safeAttempt > 12) {
       return;
     }
 
     setTimeout(() => {
       void this.#refreshTurnControlQuota(chatId, token, safeAttempt);
-    }, 1200);
+    }, 1500);
   }
 
-  async #refreshTurnControlQuota(chatId, token, attempt) {
+  async #refreshTurnControlQuota(chatId: string, token: string, attempt: number): Promise<void> {
     if (!this.bot) {
       return;
     }
@@ -599,13 +726,19 @@ export class TelegramChannel {
       return;
     }
 
-    const quotaLine = await resolveCodexQuotaLine(this.runtime);
-    if (!quotaLine) {
+    const quota = await resolveCodexQuotaLine(this.runtime);
+    if (!quota.line) {
       this.#scheduleTurnControlQuotaRefresh(chatId, token, Number(attempt) + 1);
       return;
     }
 
-    const inProgressText = ["Generation in progress.", quotaLine].join("\n");
+    // Keep polling until the real quota percentages arrive (model-only line is not enough).
+    if (!quota.hasQuotaWindows) {
+      this.#scheduleTurnControlQuotaRefresh(chatId, token, Number(attempt) + 1);
+      return;
+    }
+
+    const inProgressText = ["Generation in progress.", quota.line].join("\n");
     try {
       await this.bot.api.editMessageText(chatId, current.messageId, inProgressText, {
         reply_markup: buildTurnControlKeyboard(token),
@@ -615,7 +748,11 @@ export class TelegramChannel {
     }
   }
 
-  async #closeTurnControls(chatId, token = null, finalText = null) {
+  async #closeTurnControls(
+    chatId: string,
+    token: string | null = null,
+    finalText: string | null = null,
+  ): Promise<void> {
     const key = String(chatId);
     const current = this.turnControlByChat.get(key);
     if (!current) {
@@ -649,8 +786,12 @@ export class TelegramChannel {
     }
   }
 
-  async #handleSingleApproval(context, decision) {
-    const chatId = String(context.chat.id);
+  async #handleSingleApproval(context: Context, decision: ApprovalDecision): Promise<void> {
+    const chatId = getContextChatId(context);
+    if (!chatId) {
+      await context.reply("Unable to resolve chat.");
+      return;
+    }
     if (!this.#isAllowedChat(chatId)) {
       await context.reply("Chat not allowed for this bot.");
       return;
@@ -661,7 +802,7 @@ export class TelegramChannel {
       channelId: this.id,
       externalUserId: chatId,
     });
-    const requestedId = extractFirstCommandArgument(context.message.text);
+    const requestedId = extractFirstCommandArgument(getContextMessageText(context));
     if (requestedId.toLowerCase() === "all") {
       const summary = await this.#resolveAllApprovals({ threadId, decision });
       await context.reply(summary);
@@ -692,8 +833,12 @@ export class TelegramChannel {
     await context.reply(`Approved '${target.id}'.`);
   }
 
-  async #handleBulkApproval(context, decision) {
-    const chatId = String(context.chat.id);
+  async #handleBulkApproval(context: Context, decision: ApprovalDecision): Promise<void> {
+    const chatId = getContextChatId(context);
+    if (!chatId) {
+      await context.reply("Unable to resolve chat.");
+      return;
+    }
     if (!this.#isAllowedChat(chatId)) {
       await context.reply("Chat not allowed for this bot.");
       return;
@@ -712,14 +857,20 @@ export class TelegramChannel {
     await context.reply(summary);
   }
 
-  async #resolveAllApprovals({ threadId, decision }) {
+  async #resolveAllApprovals({
+    threadId,
+    decision,
+  }: {
+    threadId: string;
+    decision: ApprovalDecision;
+  }): Promise<string> {
     const approvals = await this.runtime.listPendingApprovals(threadId);
     if (approvals.length === 0) {
       return "No pending approvals.";
     }
 
     let successCount = 0;
-    const failedIds = [];
+    const failedIds: string[] = [];
     for (const approval of approvals) {
       try {
         await this.runtime.resolvePendingApproval({
@@ -745,7 +896,7 @@ export class TelegramChannel {
     return `${successCount}/${approvals.length} approvals ${decisionLabel}. Failed: ${failedIds.join(", ")}`;
   }
 
-  #isAllowedChat(chatId) {
+  #isAllowedChat(chatId: string): boolean {
     const set = this.allowedChatIds;
     if (!set || set.size === 0) {
       return true;
@@ -754,7 +905,19 @@ export class TelegramChannel {
   }
 }
 
-async function sendChunkedMessage(botApi, chatId, text) {
+function toRuntimeLike(runtime: unknown): RuntimeLike {
+  return runtime as RuntimeLike;
+}
+
+function getContextChatId(context: Context): string {
+  return String(context.chat?.id ?? "").trim();
+}
+
+function getContextMessageText(context: Context): string {
+  return String(context.message?.text ?? "").trim();
+}
+
+async function sendChunkedMessage(botApi: Api, chatId: string, text: string): Promise<void> {
   const max = 3900;
   for (let start = 0; start < text.length; start += max) {
     const chunk = text.slice(start, start + max);
@@ -762,7 +925,7 @@ async function sendChunkedMessage(botApi, chatId, text) {
   }
 }
 
-function formatApprovalList(approvals) {
+function formatApprovalList(approvals: PendingApproval[]): string {
   const lines = ["Pending approvals:"];
   for (const approval of approvals) {
     const commandPart = approval.command ? ` | ${approval.command.slice(0, 90)}` : "";
@@ -771,13 +934,13 @@ function formatApprovalList(approvals) {
   return lines.join("\n");
 }
 
-function extractFirstCommandArgument(text) {
+function extractFirstCommandArgument(text: string): string {
   const value = String(text ?? "").trim();
   const parts = value.split(/\s+/).slice(1);
   return String(parts[0] ?? "").trim();
 }
 
-function extractCommandTail(text) {
+function extractCommandTail(text: string): string {
   const value = String(text ?? "").trim();
   const firstSpace = value.indexOf(" ");
   if (firstSpace < 0) {
@@ -786,18 +949,18 @@ function extractCommandTail(text) {
   return value.slice(firstSpace + 1).trim();
 }
 
-function selectApproval(approvals, requestedId) {
+function selectApproval(approvals: PendingApproval[], requestedId: string): PendingApproval | null {
   const wantedId = String(requestedId ?? "").trim();
   if (wantedId) {
     return approvals.find((approval) => approval.id === wantedId) ?? null;
   }
   if (approvals.length === 1) {
-    return approvals[0];
+    return approvals[0] ?? null;
   }
   return null;
 }
 
-function buildApprovalSelectionMessage(approvals, requestedId) {
+function buildApprovalSelectionMessage(approvals: PendingApproval[], requestedId: string): string {
   const wantedId = String(requestedId ?? "").trim();
   if (wantedId && approvals.length > 0) {
     return `Approval '${wantedId}' not found.\n${formatApprovalList(approvals)}`;
@@ -808,7 +971,7 @@ function buildApprovalSelectionMessage(approvals, requestedId) {
   return `Multiple approvals pending.\n${formatApprovalList(approvals)}\nUse /approve <id>, /approvealways <id>, /approveall, /approveallalways, /deny <id> or /denyall.`;
 }
 
-function formatInterruptResult(result) {
+function formatInterruptResult(result: InterruptResult | null): string {
   if (!result || typeof result !== "object") {
     return "Stop request sent.";
   }
@@ -834,7 +997,7 @@ function formatInterruptResult(result) {
   return "No active generation to stop.";
 }
 
-function buildSteerPrompt(instruction) {
+function buildSteerPrompt(instruction: string): string {
   const text = String(instruction ?? "").trim();
   return [
     "Steer instruction from user:",
@@ -843,7 +1006,7 @@ function buildSteerPrompt(instruction) {
   ].join("\n");
 }
 
-function isTurnInterruptedError(message) {
+function isTurnInterruptedError(message: string): boolean {
   const normalized = String(message ?? "")
     .trim()
     .toLowerCase();
@@ -857,19 +1020,25 @@ function isTurnInterruptedError(message) {
   );
 }
 
-async function buildTurnFailureMessage({ runtime, safeError }) {
+async function buildTurnFailureMessage({
+  runtime,
+  safeError,
+}: {
+  runtime: RuntimeLike;
+  safeError: string;
+}): Promise<string> {
   if (isQuotaLimitError(safeError)) {
-    const quotaLine = await resolveCodexQuotaLine(runtime);
+    const quota = await resolveCodexQuotaLine(runtime);
     const base = "Execution paused: Codex quota limit reached for this account.";
-    if (quotaLine) {
-      return `${base}\n${quotaLine}`;
+    if (quota.line) {
+      return `${base}\n${quota.line}`;
     }
     return `${base}\nPlease retry after the quota reset window.`;
   }
   return `Execution error:\n${safeError}`;
 }
 
-function isQuotaLimitError(message) {
+function isQuotaLimitError(message: string): boolean {
   const normalized = String(message ?? "")
     .trim()
     .toLowerCase();
@@ -888,12 +1057,12 @@ function isQuotaLimitError(message) {
   );
 }
 
-function sanitizeError(error) {
+function sanitizeError(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error);
   return raw.split(/\r?\n/).slice(0, 12).join("\n");
 }
 
-function normalizeAllowedChatIds(value) {
+function normalizeAllowedChatIds(value: TelegramChannelConfig["allowedChatIds"]): Set<string> {
   if (Array.isArray(value)) {
     return new Set(value.map((entry) => String(entry ?? "").trim()).filter(Boolean));
   }
@@ -910,7 +1079,9 @@ function normalizeAllowedChatIds(value) {
   return new Set();
 }
 
-function buildTurnControlKeyboard(token) {
+function buildTurnControlKeyboard(token: string): {
+  inline_keyboard: Array<Array<{ text: string; callback_data: string }>>;
+} {
   const safeToken = String(token ?? "").trim();
   if (!safeToken) {
     return {
@@ -930,67 +1101,212 @@ function buildTurnControlKeyboard(token) {
   };
 }
 
-function parseTurnControlCallbackData(raw) {
+function parseTurnControlCallbackData(raw: string): { action: "stop"; token: string } | null {
   const value = String(raw ?? "").trim();
   const match = /^turnctl:(stop):([A-Za-z0-9._:-]+)$/.exec(value);
   if (!match) {
     return null;
   }
+  const action = match[1];
+  const token = match[2];
+  if (action !== "stop" || !token) {
+    return null;
+  }
   return {
-    action: match[1],
-    token: match[2],
+    action,
+    token,
   };
 }
 
-async function resolveCodexQuotaLine(runtime) {
+async function resolveCodexQuotaLine(
+  runtime: RuntimeLike,
+): Promise<{ line: string; hasQuotaWindows: boolean }> {
   if (!runtime || typeof runtime.getProviderUsage !== "function") {
-    return "";
+    return resolveCodexQuotaLineFromSnapshot(null);
   }
 
   try {
     const snapshot = await runtime.getProviderUsage();
-    return formatCodexQuotaLine(snapshot);
+    const first = resolveCodexQuotaLineFromSnapshot(snapshot);
+    if (first.hasQuotaWindows) {
+      return first;
+    }
+
+    const fallbackSnapshot = await fetchCodexQuotaSnapshotFromAuth();
+    if (!fallbackSnapshot) {
+      return first;
+    }
+
+    const merged =
+      snapshot && typeof snapshot === "object"
+        ? {
+            ...(snapshot as Record<string, unknown>),
+            ...fallbackSnapshot,
+          }
+        : fallbackSnapshot;
+    return resolveCodexQuotaLineFromSnapshot(merged);
   } catch {
-    return "";
+    return resolveCodexQuotaLineFromSnapshot(null);
   }
 }
 
-function formatCodexQuotaLine(snapshot) {
-  const windows = [
-    formatQuotaWindow("5h", snapshot?.primary),
-    formatQuotaWindow("weekly", snapshot?.secondary),
-  ].filter(Boolean);
-  if (windows.length === 0) {
-    return "";
-  }
-  return `Codex quota: ${windows.join(" | ")}`;
+function resolveCodexQuotaLineFromSnapshot(snapshot: unknown): {
+  line: string;
+  hasQuotaWindows: boolean;
+} {
+  const typed = snapshot as Parameters<typeof formatCodexQuotaLine>[0];
+  return {
+    line: formatCodexQuotaLine(typed),
+    hasQuotaWindows: hasQuotaWindowsSnapshot(typed),
+  };
 }
 
-function formatQuotaWindow(label, windowSnapshot) {
-  const remaining = Number(windowSnapshot?.remainingPercent);
-  if (!Number.isFinite(remaining)) {
-    return "";
+function hasQuotaWindowsSnapshot(snapshot: unknown): boolean {
+  if (!snapshot || typeof snapshot !== "object") {
+    return false;
   }
-
-  const resetAt = Number(windowSnapshot?.resetsAt);
-  const resetLabel = Number.isFinite(resetAt) ? `, reset ${formatEpochSeconds(resetAt)}` : "";
-  return `${label} ${Math.round(clampPercent(remaining))}%${resetLabel}`;
+  const safe = snapshot as {
+    primary?: { remainingPercent?: unknown } | null;
+    secondary?: { remainingPercent?: unknown } | null;
+  };
+  const primary = Number(safe.primary?.remainingPercent);
+  const secondary = Number(safe.secondary?.remainingPercent);
+  return Number.isFinite(primary) || Number.isFinite(secondary);
 }
 
-function formatEpochSeconds(value) {
-  const seconds = Number(value);
-  if (!Number.isFinite(seconds) || seconds <= 0) {
-    return "";
+async function fetchCodexQuotaSnapshotFromAuth(): Promise<CodexUsageSnapshot> {
+  const now = Date.now();
+  if (cachedCodexUsage && now < cachedCodexUsage.expiresAt) {
+    return cachedCodexUsage.snapshot;
   }
 
-  const date = new Date(seconds * 1000);
-  if (!Number.isFinite(date.getTime())) {
-    return "";
+  const auth = await readCodexAuthTokens();
+  if (!auth?.accessToken) {
+    return null;
   }
-  return date.toISOString().replace(".000Z", "Z");
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => {
+    controller.abort();
+  }, 3500);
+
+  try {
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${auth.accessToken}`,
+      Accept: "application/json",
+      "User-Agent": "CopilotHub",
+    };
+    if (auth.accountId) {
+      headers["ChatGPT-Account-Id"] = auth.accountId;
+    }
+
+    const response = await fetch("https://chatgpt.com/backend-api/wham/usage", {
+      method: "GET",
+      headers,
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      return null;
+    }
+
+    const payload = (await response.json()) as {
+      rate_limit?: {
+        primary_window?: {
+          used_percent?: number;
+          remaining_percent?: number;
+          reset_at?: number;
+          resets_at?: number;
+        };
+        secondary_window?: {
+          used_percent?: number;
+          remaining_percent?: number;
+          reset_at?: number;
+          resets_at?: number;
+        };
+      };
+    };
+
+    const primary = normalizeWhamWindow(payload?.rate_limit?.primary_window);
+    const secondary = normalizeWhamWindow(payload?.rate_limit?.secondary_window);
+    const hasData =
+      Number.isFinite(Number(primary?.remainingPercent)) ||
+      Number.isFinite(Number(secondary?.remainingPercent));
+    if (!hasData) {
+      return null;
+    }
+
+    const snapshot: CodexUsageSnapshot = { primary, secondary };
+    cachedCodexUsage = {
+      expiresAt: now + CODEX_USAGE_CACHE_TTL_MS,
+      snapshot,
+    };
+    return snapshot;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
-function clampPercent(value) {
+function normalizeWhamWindow(
+  window:
+    | {
+        used_percent?: number;
+        remaining_percent?: number;
+        reset_at?: number;
+        resets_at?: number;
+      }
+    | null
+    | undefined,
+): { remainingPercent: number | null; resetsAt: number | null } {
+  const used = Number(window?.used_percent);
+  const remainingDirect = Number(window?.remaining_percent);
+  let remaining: number | null = null;
+  if (Number.isFinite(remainingDirect)) {
+    remaining = clampPercent(remainingDirect);
+  } else if (Number.isFinite(used)) {
+    remaining = clampPercent(100 - used);
+  }
+
+  const resetSeconds = Number(window?.reset_at ?? window?.resets_at);
+  const resetsAt = Number.isFinite(resetSeconds) ? resetSeconds : null;
+  return {
+    remainingPercent: remaining,
+    resetsAt,
+  };
+}
+
+async function readCodexAuthTokens(): Promise<{
+  accessToken: string;
+  accountId: string | null;
+} | null> {
+  const codexHome = resolveCodexHomeDir();
+  const authPath = path.join(codexHome, "auth.json");
+  try {
+    const raw = await fs.readFile(authPath, "utf8");
+    const parsed = JSON.parse(raw) as {
+      tokens?: { access_token?: string; account_id?: string };
+    };
+    const accessToken = String(parsed?.tokens?.access_token ?? "").trim();
+    if (!accessToken) {
+      return null;
+    }
+    const accountId = String(parsed?.tokens?.account_id ?? "").trim() || null;
+    return { accessToken, accountId };
+  } catch {
+    return null;
+  }
+}
+
+function resolveCodexHomeDir(): string {
+  const fromEnv = String(process.env.CODEX_HOME_DIR ?? process.env.CODEX_HOME ?? "").trim();
+  if (fromEnv) {
+    return path.resolve(fromEnv);
+  }
+  return path.join(os.homedir(), ".codex");
+}
+
+function clampPercent(value: number): number {
   const n = Number(value);
   if (!Number.isFinite(n)) {
     return 0;

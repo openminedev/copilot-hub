@@ -1,4 +1,3 @@
-// @ts-nocheck
 import path from "node:path";
 import { ConversationEngine } from "./bridge-service.js";
 import { createChannelAdapter } from "./channel-factory.js";
@@ -10,7 +9,212 @@ import { createAssistantProvider } from "./provider-factory.js";
 
 const DEFAULT_WEB_THREAD_SUFFIX = "web-main";
 
+type KernelActionContext = {
+  source?: string;
+  metadata?: Record<string, unknown>;
+} & Record<string, unknown>;
+
+type KernelActionRequest = {
+  action: string;
+  payload?: Record<string, unknown>;
+  context?: KernelActionContext;
+};
+
+type KernelControl = {
+  request: (request: KernelActionRequest) => Promise<unknown> | unknown;
+};
+
+type ProviderDefaults = {
+  defaultKind?: string;
+} & Record<string, unknown>;
+
+type RuntimeTelegramChannelConfig = {
+  kind: "telegram";
+  id: string;
+  token: string;
+  tokenEnv: string | null;
+  tokenSecretRef: string | null;
+  allowedChatIds: string[];
+};
+
+type RuntimeWhatsAppChannelConfig = {
+  kind: "whatsapp";
+  id: string;
+  options: Record<string, unknown>;
+};
+
+type RuntimeGenericChannelConfig = {
+  kind: string;
+  id: string;
+  options: Record<string, unknown>;
+};
+
+type RuntimeChannelConfig =
+  | RuntimeTelegramChannelConfig
+  | RuntimeWhatsAppChannelConfig
+  | RuntimeGenericChannelConfig;
+
+type RuntimeCapabilityConfig = {
+  id: string;
+  enabled: boolean;
+  manifestPath: string;
+  options: Record<string, unknown>;
+};
+
+type RuntimeBotConfigInput = {
+  id?: unknown;
+  name?: unknown;
+  enabled?: unknown;
+  autoStart?: unknown;
+  workspaceRoot?: unknown;
+  dataDir?: unknown;
+  threadMode?: unknown;
+  sharedThreadId?: unknown;
+  provider?: unknown;
+  kernelAccess?: unknown;
+  channels?: unknown;
+  capabilities?: unknown;
+};
+
+type RuntimeConfig = {
+  id: string;
+  name: string;
+  enabled: boolean;
+  autoStart: boolean;
+  workspaceRoot: string;
+  dataDir: string;
+  threadMode: "single" | "per_chat";
+  sharedThreadId: string;
+  provider: {
+    kind: string;
+    options: Record<string, unknown>;
+  };
+  channels: RuntimeChannelConfig[];
+  capabilities: RuntimeCapabilityConfig[];
+  kernelAccess: {
+    enabled: boolean;
+    allowedActions: string[];
+    allowedChatIds: string[];
+  };
+};
+
+type RuntimeChannelStatus = {
+  kind: string;
+  id: string;
+  running: boolean;
+  error?: string | null;
+} & Record<string, unknown>;
+
+type RuntimeChannel = {
+  kind: string;
+  id: string;
+  start: () => Promise<unknown>;
+  stop: () => Promise<unknown>;
+  shutdown: () => Promise<void>;
+  getStatus: () => RuntimeChannelStatus;
+  notifyApproval?: (approval: Record<string, unknown>) => Promise<void> | void;
+};
+
+type RuntimeTurnPayload = {
+  threadId: string;
+  prompt: string;
+  source?: string;
+  metadata?: Record<string, unknown>;
+  inputItems?: unknown[];
+};
+
+type RuntimeApprovalPayload = {
+  threadId: string;
+  approvalId: string;
+  decision: string;
+};
+
+type ConversationEngineInit = ConstructorParameters<typeof ConversationEngine>[0];
+type ConversationThreadPayload = Awaited<ReturnType<ConversationEngine["getThread"]>>;
+
+type ChannelRuntime = {
+  runtimeId: string;
+  runtimeName: string;
+  getWorkspaceRoot: () => string;
+  buildWebBotUrl: () => string;
+  refreshProviderSession: (reason?: string) => Promise<{
+    refreshed: boolean;
+    channelsRestarted: boolean;
+    reason: string;
+  }>;
+  isKernelControlEnabled: () => boolean;
+  executeKernelAction: (payload: {
+    action: unknown;
+    payload?: unknown;
+    context?: unknown;
+  }) => Promise<unknown>;
+  resolveThreadIdForChannel: (payload: {
+    channelKind: string;
+    channelId: string;
+    externalUserId: string;
+  }) => Promise<string>;
+  getThread: (threadId: string) => Promise<ConversationThreadPayload>;
+  resetThread: (threadId: string) => Promise<ConversationThreadPayload>;
+  interruptThread: (threadId: string) => Promise<Record<string, unknown>>;
+  listPendingApprovals: (threadId?: string) => Promise<unknown[]>;
+  resolvePendingApproval: (payload: RuntimeApprovalPayload) => Promise<unknown>;
+  getProviderUsage: () => Promise<unknown>;
+  sendTurn: (payload: RuntimeTurnPayload) => Promise<
+    {
+      threadId: string;
+      assistantText: string;
+    } & Record<string, unknown>
+  >;
+};
+
+type ChannelAdapterFactory = (params: {
+  channelConfig: RuntimeChannelConfig;
+  runtime: ChannelRuntime;
+}) => RuntimeChannel;
+
+type BotRuntimeStatus = {
+  id: string;
+  name: string;
+  enabled: boolean;
+  autoStart: boolean;
+  threadMode: "single" | "per_chat";
+  sharedThreadId: string;
+  providerKind: string;
+  kernelVersion: string;
+  webThreadId: string;
+  running: boolean;
+  telegramRunning: boolean;
+  telegramError: string | null;
+  workspaceRoot: string;
+  dataDir: string;
+  kernelAccess: {
+    enabled: boolean;
+    allowedActions: string[];
+    allowedChatIds: string[];
+  };
+  capabilities: unknown[];
+  channels: RuntimeChannelStatus[];
+};
+
 export class BotRuntime {
+  config: RuntimeConfig;
+  providerDefaults: ProviderDefaults;
+  kernelControl: KernelControl | null;
+  channelAdapterFactory: ChannelAdapterFactory;
+  turnActivityTimeoutMs: number;
+  maxMessages: number;
+  projectRoot: string;
+  projectFingerprint: string;
+  store: JsonStateStore | null;
+  engine: ConversationEngine | null;
+  provider: ReturnType<typeof createAssistantProvider> | null;
+  capabilityManager: CapabilityManager | null;
+  channels: RuntimeChannel[];
+  telegramRunning: boolean;
+  telegramError: string | null;
+  webPublicBaseUrl: string;
+  initPromise: Promise<void> | null;
+
   constructor({
     botConfig,
     providerDefaults,
@@ -18,28 +222,15 @@ export class BotRuntime {
     maxMessages,
     kernelControl = null,
     channelAdapterFactory = null,
+  }: {
+    botConfig: RuntimeBotConfigInput;
+    providerDefaults: ProviderDefaults;
+    turnActivityTimeoutMs: number;
+    maxMessages: number;
+    kernelControl?: KernelControl | null;
+    channelAdapterFactory?: ChannelAdapterFactory | null;
   }) {
-    this.config = {
-      ...botConfig,
-      channels: Array.isArray(botConfig.channels) ? botConfig.channels : [],
-      capabilities: Array.isArray(botConfig.capabilities) ? botConfig.capabilities : [],
-      kernelAccess:
-        botConfig.kernelAccess && typeof botConfig.kernelAccess === "object"
-          ? {
-              enabled: botConfig.kernelAccess.enabled === true,
-              allowedActions: Array.isArray(botConfig.kernelAccess.allowedActions)
-                ? [...botConfig.kernelAccess.allowedActions]
-                : [],
-              allowedChatIds: Array.isArray(botConfig.kernelAccess.allowedChatIds)
-                ? [...botConfig.kernelAccess.allowedChatIds]
-                : [],
-            }
-          : {
-              enabled: false,
-              allowedActions: [],
-              allowedChatIds: [],
-            },
-    };
+    this.config = normalizeRuntimeConfig(botConfig);
     this.providerDefaults = {
       defaultKind: "codex",
       ...(providerDefaults ?? {}),
@@ -47,7 +238,9 @@ export class BotRuntime {
     this.kernelControl =
       kernelControl && typeof kernelControl.request === "function" ? kernelControl : null;
     this.channelAdapterFactory =
-      typeof channelAdapterFactory === "function" ? channelAdapterFactory : createChannelAdapter;
+      typeof channelAdapterFactory === "function"
+        ? channelAdapterFactory
+        : (createChannelAdapter as ChannelAdapterFactory);
     this.turnActivityTimeoutMs = turnActivityTimeoutMs;
     this.maxMessages = maxMessages;
     this.projectRoot = path.resolve(String(this.config.workspaceRoot));
@@ -70,30 +263,30 @@ export class BotRuntime {
     this.initPromise = null;
   }
 
-  get id() {
+  get id(): string {
     return this.config.id;
   }
 
-  get name() {
+  get name(): string {
     return this.config.name;
   }
 
-  get providerKind() {
+  get providerKind(): string {
     return String(this.config.provider?.kind ?? this.providerDefaults?.defaultKind ?? "codex");
   }
 
-  get webThreadId() {
+  get webThreadId(): string {
     if (this.config.threadMode === "single") {
       return this.config.sharedThreadId;
     }
     return `web:${this.config.id}:${DEFAULT_WEB_THREAD_SUFFIX}`;
   }
 
-  setWebPublicBaseUrl(value) {
+  setWebPublicBaseUrl(value: string): void {
     this.webPublicBaseUrl = String(value ?? "").trim() || this.webPublicBaseUrl;
   }
 
-  async ensureInitialized() {
+  async ensureInitialized(): Promise<void> {
     if (this.initPromise) {
       await this.initPromise;
       return;
@@ -113,8 +306,8 @@ export class BotRuntime {
       });
 
       this.engine = new ConversationEngine({
-        store: this.store,
-        assistantProvider: this.provider,
+        store: this.store as unknown as ConversationEngineInit["store"],
+        assistantProvider: this.provider as unknown as ConversationEngineInit["assistantProvider"],
         projectRoot: this.projectRoot,
         turnActivityTimeoutMs: this.turnActivityTimeoutMs,
         maxMessages: this.maxMessages,
@@ -140,7 +333,7 @@ export class BotRuntime {
     await this.initPromise;
   }
 
-  async startChannels() {
+  async startChannels(): Promise<BotRuntimeStatus> {
     await this.ensureInitialized();
     for (const channel of this.channels) {
       await channel.start();
@@ -149,7 +342,7 @@ export class BotRuntime {
     return this.getStatus();
   }
 
-  async stopChannels() {
+  async stopChannels(): Promise<BotRuntimeStatus> {
     await this.ensureInitialized();
     for (const channel of this.channels) {
       await channel.stop();
@@ -158,7 +351,7 @@ export class BotRuntime {
     return this.getStatus();
   }
 
-  async shutdown() {
+  async shutdown(): Promise<void> {
     if (this.channels.length > 0) {
       for (const channel of this.channels) {
         await channel.shutdown();
@@ -180,7 +373,7 @@ export class BotRuntime {
     this.telegramError = null;
   }
 
-  async setProjectRoot(projectRoot) {
+  async setProjectRoot(projectRoot: string): Promise<void> {
     const nextRoot = path.resolve(String(projectRoot));
     if (nextRoot === this.projectRoot) {
       return;
@@ -203,79 +396,135 @@ export class BotRuntime {
     }
   }
 
-  async resetWebThread() {
+  async refreshProviderSession(reason = "manual provider session refresh"): Promise<{
+    refreshed: boolean;
+    channelsRestarted: boolean;
+    reason: string;
+  }> {
+    const hadRunningChannels = this.channels.some((channel) => channel.getStatus().running);
+    await this.shutdown();
     await this.ensureInitialized();
-    return this.engine.resetThread(this.webThreadId);
+    if (hadRunningChannels) {
+      await this.startChannels();
+    }
+    return {
+      refreshed: true,
+      channelsRestarted: hadRunningChannels,
+      reason: String(reason ?? "manual provider session refresh"),
+    };
   }
 
-  async listPendingApprovals(threadId) {
+  async resetWebThread(): Promise<ConversationThreadPayload> {
     await this.ensureInitialized();
-    return this.engine.listPendingApprovals(threadId);
+    return this.#requireEngine().resetThread(this.webThreadId);
   }
 
-  async resolvePendingApproval({ threadId, approvalId, decision }) {
+  async listPendingApprovals(threadId?: string): Promise<unknown[]> {
     await this.ensureInitialized();
-    return this.engine.resolvePendingApproval({ threadId, approvalId, decision });
+    return this.#requireEngine().listPendingApprovals(threadId);
   }
 
-  async interruptThread(threadId) {
+  async resolvePendingApproval({
+    threadId,
+    approvalId,
+    decision,
+  }: RuntimeApprovalPayload): Promise<unknown> {
     await this.ensureInitialized();
-    return this.engine.interruptThread(threadId);
+    return this.#requireEngine().resolvePendingApproval({ threadId, approvalId, decision });
   }
 
-  async getProviderUsage() {
+  async interruptThread(threadId: string): Promise<Record<string, unknown>> {
     await this.ensureInitialized();
-    if (!this.engine || typeof this.engine.getProviderUsage !== "function") {
+    return this.#requireEngine().interruptThread(threadId);
+  }
+
+  async getProviderUsage(): Promise<unknown> {
+    await this.ensureInitialized();
+    const engine = this.#requireEngine();
+    if (typeof engine.getProviderUsage !== "function") {
       return null;
     }
-    return this.engine.getProviderUsage();
+    return engine.getProviderUsage();
   }
 
-  async resolveThreadIdForChannel({ channelKind, channelId, externalUserId }) {
+  async resolveThreadIdForChannel({
+    channelKind,
+    channelId,
+    externalUserId,
+  }: {
+    channelKind: string;
+    channelId: string;
+    externalUserId: string;
+  }): Promise<string> {
     await this.ensureInitialized();
+    const store = this.#requireStore();
     if (this.config.threadMode === "single") {
       const threadId = this.config.sharedThreadId;
-      await this.store.ensureThread(threadId);
+      await store.ensureThread(threadId);
       return threadId;
     }
 
     const key = `${String(channelKind)}:${String(channelId)}:${String(externalUserId)}`;
-    return this.store.getOrCreateThreadIdForChannelUser(key);
+    return store.getOrCreateThreadIdForChannelUser(key);
   }
 
-  async getThread(threadId) {
+  async getThread(threadId: string): Promise<ConversationThreadPayload> {
     await this.ensureInitialized();
-    return this.engine.getThread(threadId);
+    return this.#requireEngine().getThread(threadId);
   }
 
-  async resetThread(threadId) {
+  async resetThread(threadId: string): Promise<ConversationThreadPayload> {
     await this.ensureInitialized();
-    return this.engine.resetThread(threadId);
+    return this.#requireEngine().resetThread(threadId);
   }
 
-  async sendTurn(payload) {
+  async sendTurn(payload: RuntimeTurnPayload): Promise<
+    {
+      threadId: string;
+      assistantText: string;
+    } & Record<string, unknown>
+  > {
     await this.ensureInitialized();
-    const input = await this.capabilityManager.transformTurnInput({
+    const capabilityManager = this.#requireCapabilityManager();
+    const input = await capabilityManager.transformTurnInput({
       ...payload,
       metadata: payload?.metadata && typeof payload.metadata === "object" ? payload.metadata : {},
     });
 
-    if (!String(input.prompt ?? "").trim()) {
+    const threadId = String((input as Record<string, unknown>).threadId ?? "").trim();
+    if (!threadId) {
+      throw new Error("threadId is required.");
+    }
+    const prompt = String((input as Record<string, unknown>).prompt ?? "").trim();
+    if (!prompt) {
       throw new Error("Capability pipeline produced an empty prompt.");
     }
+    const source = String((input as Record<string, unknown>).source ?? "").trim() || "internal";
+    const metadata = asRecord((input as Record<string, unknown>).metadata);
+    const inputItemsRaw = (input as Record<string, unknown>).inputItems;
+    const sendPayload: Parameters<ConversationEngine["sendTurn"]>[0] = {
+      threadId,
+      prompt,
+      source,
+      metadata,
+      ...(Array.isArray(inputItemsRaw) ? { inputItems: inputItemsRaw } : {}),
+    };
 
-    const result = await this.engine.sendTurn(input);
-    await this.capabilityManager.runHook("onTurnResult", {
-      threadId: input.threadId,
-      prompt: input.prompt,
-      source: input.source,
-      metadata: input.metadata,
+    const result = (await this.#requireEngine().sendTurn(sendPayload)) as {
+      threadId: string;
+      assistantText: string;
+    } & Record<string, unknown>;
+    await capabilityManager.runHook("onTurnResult", {
+      threadId: sendPayload.threadId,
+      prompt: sendPayload.prompt,
+      source: sendPayload.source,
+      metadata: sendPayload.metadata,
       result,
     });
     return result;
   }
 
-  getStatus() {
+  getStatus(): BotRuntimeStatus {
     this.#syncTelegramStatus();
     return {
       id: this.config.id,
@@ -306,16 +555,16 @@ export class BotRuntime {
     };
   }
 
-  async reloadCapabilities(nextDefinitions = null) {
+  async reloadCapabilities(nextDefinitions: unknown = null): Promise<BotRuntimeStatus> {
     await this.ensureInitialized();
     if (Array.isArray(nextDefinitions)) {
-      this.config.capabilities = nextDefinitions;
+      this.config.capabilities = normalizeCapabilityDefinitions(nextDefinitions);
     }
-    await this.capabilityManager.reload(this.config.capabilities);
+    await this.#requireCapabilityManager().reload(this.config.capabilities);
     return this.getStatus();
   }
 
-  async onApprovalRequested(approval) {
+  async onApprovalRequested(approval: Record<string, unknown>): Promise<void> {
     if (this.capabilityManager) {
       await this.capabilityManager.notifyApprovalRequested(approval);
     }
@@ -325,7 +574,8 @@ export class BotRuntime {
       return;
     }
 
-    const requestedChannelId = String(approval?.metadata?.channelId ?? "").trim();
+    const metadata = asRecord(approval.metadata);
+    const requestedChannelId = String(metadata.channelId ?? "").trim();
     const telegramChannels = this.channels.filter((channel) => channel.kind === "telegram");
     const targets = requestedChannelId
       ? telegramChannels.filter((channel) => channel.id === requestedChannelId)
@@ -336,11 +586,13 @@ export class BotRuntime {
     }
 
     for (const channel of targets) {
-      await channel.notifyApproval(approval);
+      if (typeof channel.notifyApproval === "function") {
+        await channel.notifyApproval(approval);
+      }
     }
   }
 
-  buildWebBotUrl() {
+  buildWebBotUrl(): string {
     try {
       const url = new URL(this.webPublicBaseUrl);
       url.searchParams.set("bot", this.id);
@@ -351,7 +603,7 @@ export class BotRuntime {
     }
   }
 
-  async #ensureStoreFingerprint() {
+  async #ensureStoreFingerprint(): Promise<void> {
     if (!this.store) {
       return;
     }
@@ -364,12 +616,13 @@ export class BotRuntime {
     }
   }
 
-  #buildChannelRuntime() {
+  #buildChannelRuntime(): ChannelRuntime {
     return {
       runtimeId: this.id,
       runtimeName: this.name,
       getWorkspaceRoot: () => this.projectRoot,
       buildWebBotUrl: () => this.buildWebBotUrl(),
+      refreshProviderSession: (reason) => this.refreshProviderSession(reason),
       isKernelControlEnabled: () => this.isKernelControlEnabled(),
       executeKernelAction: (payload) => this.executeKernelAction(payload),
       resolveThreadIdForChannel: (payload) => this.resolveThreadIdForChannel(payload),
@@ -383,22 +636,34 @@ export class BotRuntime {
     };
   }
 
-  isKernelControlEnabled() {
+  isKernelControlEnabled(): boolean {
     return this.config.kernelAccess?.enabled === true && this.kernelControl !== null;
   }
 
-  async executeKernelAction({ action, payload, context }) {
+  async executeKernelAction({
+    action,
+    payload,
+    context,
+  }: {
+    action: unknown;
+    payload?: unknown;
+    context?: unknown;
+  }): Promise<unknown> {
     if (!this.isKernelControlEnabled()) {
       throw new Error(`Kernel control is disabled for '${this.id}'.`);
     }
-    return this.kernelControl.request({
-      action,
-      payload: payload ?? {},
-      context: context ?? { source: "internal", metadata: {} },
+    const kernelControl = this.kernelControl;
+    if (!kernelControl) {
+      throw new Error(`Kernel control is disabled for '${this.id}'.`);
+    }
+    return kernelControl.request({
+      action: String(action ?? "").trim(),
+      payload: asRecord(payload),
+      context: asKernelActionContext(context),
     });
   }
 
-  #syncTelegramStatus() {
+  #syncTelegramStatus(): void {
     if (!this.channels || this.channels.length === 0) {
       this.telegramRunning = false;
       this.telegramError = null;
@@ -410,6 +675,180 @@ export class BotRuntime {
       .map((channel) => channel.getStatus());
     this.telegramRunning = telegram.some((entry) => entry.running);
     const errors = telegram.map((entry) => entry.error).filter(Boolean);
-    this.telegramError = errors.length > 0 ? errors[0] : null;
+    this.telegramError = errors.length > 0 ? String(errors[0]) : null;
   }
+
+  #requireStore(): JsonStateStore {
+    if (!this.store) {
+      throw new Error("State store is not initialized.");
+    }
+    return this.store;
+  }
+
+  #requireEngine(): ConversationEngine {
+    if (!this.engine) {
+      throw new Error("Conversation engine is not initialized.");
+    }
+    return this.engine;
+  }
+
+  #requireCapabilityManager(): CapabilityManager {
+    if (!this.capabilityManager) {
+      throw new Error("Capability manager is not initialized.");
+    }
+    return this.capabilityManager;
+  }
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+}
+
+function normalizeRuntimeConfig(botConfig: RuntimeBotConfigInput): RuntimeConfig {
+  const id = String(botConfig?.id ?? "").trim() || "bot_default";
+  const name = String(botConfig?.name ?? id).trim() || id;
+  const workspaceRoot = path.resolve(String(botConfig?.workspaceRoot ?? process.cwd()));
+  const dataDir = path.resolve(
+    String(botConfig?.dataDir ?? path.join(process.cwd(), ".copilot-hub", "bots", id)),
+  );
+
+  return {
+    id,
+    name,
+    enabled: botConfig?.enabled !== false,
+    autoStart: Boolean(botConfig?.autoStart),
+    workspaceRoot,
+    dataDir,
+    threadMode: normalizeThreadMode(botConfig?.threadMode),
+    sharedThreadId: String(botConfig?.sharedThreadId ?? `thread:${id}`).trim() || `thread:${id}`,
+    provider: normalizeProviderConfig(botConfig?.provider),
+    channels: normalizeChannelConfigs(botConfig?.channels),
+    capabilities: normalizeCapabilityDefinitions(botConfig?.capabilities),
+    kernelAccess: normalizeKernelAccess(botConfig?.kernelAccess),
+  };
+}
+
+function normalizeThreadMode(value: unknown): "single" | "per_chat" {
+  const mode = String(value ?? "single")
+    .trim()
+    .toLowerCase();
+  return mode === "per_chat" ? "per_chat" : "single";
+}
+
+function normalizeProviderConfig(value: unknown): RuntimeConfig["provider"] {
+  const raw = asRecord(value);
+  const options = asRecord(raw.options);
+  return {
+    kind: String(raw.kind ?? "codex").trim() || "codex",
+    options,
+  };
+}
+
+function normalizeChannelConfigs(value: unknown): RuntimeChannelConfig[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const channels: RuntimeChannelConfig[] = [];
+  for (let index = 0; index < value.length; index += 1) {
+    const raw = asRecord(value[index]);
+    const kind = String(raw.kind ?? "")
+      .trim()
+      .toLowerCase();
+    if (!kind) {
+      continue;
+    }
+
+    const fallbackId = `${kind}_${index + 1}`;
+    const id = String(raw.id ?? fallbackId).trim() || fallbackId;
+
+    if (kind === "telegram") {
+      channels.push({
+        kind: "telegram",
+        id,
+        token: String(raw.token ?? "").trim(),
+        tokenEnv: normalizeOptionalString(raw.tokenEnv),
+        tokenSecretRef: normalizeOptionalString(raw.tokenSecretRef),
+        allowedChatIds: normalizeStringList(raw.allowedChatIds),
+      });
+      continue;
+    }
+
+    if (kind === "whatsapp") {
+      channels.push({
+        kind: "whatsapp",
+        id,
+        options: asRecord(raw.options),
+      });
+      continue;
+    }
+
+    channels.push({
+      kind,
+      id,
+      options: asRecord(raw.options),
+    });
+  }
+
+  return channels;
+}
+
+function normalizeCapabilityDefinitions(value: unknown): RuntimeCapabilityConfig[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const capabilities: RuntimeCapabilityConfig[] = [];
+  for (let index = 0; index < value.length; index += 1) {
+    const raw = asRecord(value[index]);
+    const id = String(raw.id ?? `capability_${index + 1}`).trim();
+    const manifestPath = String(raw.manifestPath ?? "").trim();
+    if (!id || !manifestPath) {
+      continue;
+    }
+
+    capabilities.push({
+      id,
+      enabled: raw.enabled !== false,
+      manifestPath,
+      options: asRecord(raw.options),
+    });
+  }
+  return capabilities;
+}
+
+function normalizeKernelAccess(value: unknown): RuntimeConfig["kernelAccess"] {
+  const raw = asRecord(value);
+  return {
+    enabled: raw.enabled === true,
+    allowedActions: normalizeStringList(raw.allowedActions),
+    allowedChatIds: normalizeStringList(raw.allowedChatIds),
+  };
+}
+
+function normalizeStringList(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.map((entry) => String(entry ?? "").trim()).filter(Boolean);
+  }
+  if (typeof value === "string") {
+    return value
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+  }
+  return [];
+}
+
+function normalizeOptionalString(value: unknown): string | null {
+  const normalized = String(value ?? "").trim();
+  return normalized || null;
+}
+
+function asKernelActionContext(value: unknown): KernelActionContext {
+  const record = asRecord(value);
+  return {
+    ...record,
+    source: String(record.source ?? "internal").trim() || "internal",
+    metadata: asRecord(record.metadata),
+  };
 }

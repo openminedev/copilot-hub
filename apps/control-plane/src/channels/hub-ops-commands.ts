@@ -1,18 +1,210 @@
-// @ts-nocheck
 import { randomBytes } from "node:crypto";
+import {
+  applyBotModelPolicy,
+  applyModelPolicyToBots,
+  buildSessionModelOptions,
+  fetchCodexModelOptions,
+  formatModelButtonText,
+  formatModelLabel,
+  getBotPolicyState,
+  parseSetModelAllCommand,
+  parseSetModelCommand,
+  resolveModelSelectionFromAction,
+} from "./hub-model-utils.js";
+
+type SandboxMode = "read-only" | "workspace-write" | "danger-full-access";
+type ApprovalPolicy = "on-request" | "on-failure" | "never";
+
+type PolicyProfileId = "safe" | "standard" | "semi_auto" | "full_auto";
+
+type PolicyProfile = {
+  id: PolicyProfileId;
+  label: string;
+  hint: string;
+  sandboxMode: SandboxMode;
+  approvalPolicy: ApprovalPolicy;
+};
+
+type ModelSelectionOption = ReturnType<typeof buildSessionModelOptions>[number];
+
+type TelegramChat = {
+  id?: string | number | null;
+};
+
+type TelegramMessage = {
+  text?: string | null;
+  message_id?: number | null;
+  chat?: TelegramChat | null;
+};
+
+type TelegramCallbackMessage = {
+  chat?: TelegramChat | null;
+};
+
+type TelegramCallbackQuery = {
+  data?: string | null;
+  message?: TelegramCallbackMessage | null;
+};
+
+type TelegramApi = {
+  deleteMessage: (chatId: string | number, messageId: number) => Promise<unknown>;
+};
+
+type InlineKeyboardButton = {
+  text: string;
+  callback_data: string;
+};
+
+type ReplyOptions = {
+  reply_markup?: {
+    inline_keyboard: InlineKeyboardButton[][];
+  };
+};
+
+type HubOpsContext = {
+  message?: TelegramMessage | null;
+  callbackQuery?: TelegramCallbackQuery | null;
+  chat?: TelegramChat | null;
+  api: TelegramApi;
+  reply: (text: string, options?: ReplyOptions) => Promise<unknown>;
+  editMessageText: (text: string, options?: ReplyOptions) => Promise<unknown>;
+  answerCallbackQuery: (payload?: { text: string }) => Promise<unknown>;
+};
+
+type HubRuntimeInfo = {
+  runtimeId?: string | null;
+  runtimeName?: string | null;
+  refreshProviderSession?: (reason?: string) => Promise<unknown>;
+};
+
+type MenuSession = {
+  chatId: string;
+  createdAt: number;
+  botIds: string[];
+  modelOptions: ModelSelectionOption[];
+};
+
+type TelegramVerificationFailure = {
+  ok: false;
+  error: string;
+};
+
+type TelegramVerificationSuccess = {
+  ok: true;
+  id: number;
+  username: string | null;
+};
+
+type TelegramVerificationResult = TelegramVerificationFailure | TelegramVerificationSuccess;
+
+type CreateFlow = {
+  createdAt: number;
+  step: "token" | "bot_id" | "confirm";
+  token: string | null;
+  tokenInfo: TelegramVerificationSuccess | null;
+  botId: string | null;
+};
+
+type CodexSwitchFlow = {
+  createdAt: number;
+  step: "api_key";
+};
+
+type BotState = {
+  id: string;
+  running: boolean;
+  telegramRunning: boolean;
+  provider?: {
+    options?: Record<string, unknown>;
+  } | null;
+};
+
+type HubOpsMenuAction =
+  | { type: "back" }
+  | { type: "create" }
+  | { type: "refresh"; sessionId: string }
+  | { type: "model_home"; sessionId: string }
+  | { type: "model_open"; sessionId: string; index: number }
+  | { type: "global_model_open"; sessionId: string }
+  | { type: "global_model"; sessionId: string; profileId: string }
+  | {
+      type: "open" | "reset_ask" | "reset_confirm" | "delete_ask" | "delete_confirm";
+      sessionId: string;
+      index: number;
+    }
+  | {
+      type: "policy" | "model" | "model_apply";
+      sessionId: string;
+      index: number;
+      profileId: string;
+    };
+
+type HealthResponse = {
+  ok?: boolean;
+  service?: string;
+  botCount?: number;
+  webPort?: string | number;
+};
+
+type CodexStatusResponse = {
+  configured?: boolean;
+  codexBin?: string;
+  detail?: string;
+  deviceAuth?: {
+    status?: string;
+    code?: string;
+    loginUrl?: string;
+    detail?: string;
+  };
+};
+
+type DeviceAuthStartResponse = {
+  status?: string;
+  loginUrl?: string;
+  code?: string;
+};
+
+type DeviceAuthCancelResponse = {
+  canceled?: boolean;
+};
+
+type CreateBotResponse = {
+  bot?: {
+    id?: string;
+  };
+};
+
+type CodexSwitchApiKeyResponse = {
+  detail?: string;
+  restartedBots?: string[];
+  restartFailures?: unknown[];
+};
+
+type BotListResponse = {
+  bots?: unknown[];
+};
 
 const MENU_TTL_MS = 15 * 60 * 1000;
 const FLOW_TTL_MS = 10 * 60 * 1000;
 const TELEGRAM_VERIFY_TIMEOUT_MS = 10_000;
+const CODEX_LOGIN_WATCH_TIMEOUT_MS = 5 * 60 * 1000;
+const CODEX_LOGIN_WATCH_POLL_MS = 2_500;
 
 const BOT_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 const TELEGRAM_TOKEN_PATTERN = /^\d{5,}:[A-Za-z0-9_-]{20,}$/;
 
-const menuSessions = new Map();
-const createFlows = new Map();
-const codexSwitchFlows = new Map();
+const menuSessions = new Map<string, MenuSession>();
+const createFlows = new Map<string, CreateFlow>();
+const codexSwitchFlows = new Map<string, CodexSwitchFlow>();
+const codexLoginWatchers = new Map<
+  string,
+  {
+    token: string;
+    startedAt: number;
+  }
+>();
 
-const POLICY_PROFILES = {
+const POLICY_PROFILES: Record<PolicyProfileId, PolicyProfile> = {
   safe: {
     id: "safe",
     label: "Safe",
@@ -43,7 +235,15 @@ const POLICY_PROFILES = {
   },
 };
 
-export async function maybeHandleHubOpsCommand({ ctx, runtime, channelId }) {
+export async function maybeHandleHubOpsCommand({
+  ctx,
+  runtime,
+  channelId,
+}: {
+  ctx: HubOpsContext;
+  runtime?: HubRuntimeInfo | null;
+  channelId?: string | null;
+}): Promise<boolean> {
   const text = String(ctx.message?.text ?? "").trim();
   const command = extractCommand(text);
   if (!command) {
@@ -54,162 +254,276 @@ export async function maybeHandleHubOpsCommand({ ctx, runtime, channelId }) {
 
   const chatId = getChatId(ctx);
   const flowKey = buildFlowKey(runtime?.runtimeId, channelId, chatId);
-
-  if (command === "/start" || command === "/help") {
-    await ctx.reply(buildHelpText(runtime?.runtimeName));
-    return true;
-  }
-
-  if (command === "/health") {
-    try {
-      const health = await apiGet("/api/health");
-      await ctx.reply(
-        [
-          "Engine health:",
-          `ok: ${Boolean(health?.ok)}`,
-          `service: ${String(health?.service ?? "-")}`,
-          `botCount: ${Number(health?.botCount ?? 0)}`,
-          `webPort: ${String(health?.webPort ?? "-")}`,
-        ].join("\n"),
-      );
-    } catch (error) {
-      await ctx.reply(`Health failed: ${sanitizeError(error)}`);
+  try {
+    if (command === "/start" || command === "/help") {
+      await ctx.reply(buildHelpText(runtime?.runtimeName));
+      return true;
     }
-    return true;
-  }
 
-  if (command === "/bots") {
-    try {
-      await renderBotsMenu(ctx, { editMessage: false });
-    } catch (error) {
-      await ctx.reply(`Bots list failed: ${sanitizeError(error)}`);
-    }
-    return true;
-  }
-
-  if (command === "/codex_status") {
-    try {
-      const status = await apiGet("/api/system/codex/status");
-      const deviceAuth = status?.deviceAuth ?? {};
-      const deviceStatus = String(deviceAuth?.status ?? "idle");
-      await ctx.reply(
-        [
-          "Codex account:",
-          `configured: ${status?.configured ? "yes" : "no"}`,
-          `binary: ${String(status?.codexBin ?? "-")}`,
-          status?.detail ? `detail: ${String(status.detail)}` : "",
-          `deviceAuth: ${deviceStatus}`,
-          deviceAuth?.code ? `code: ${String(deviceAuth.code)}` : "",
-          deviceAuth?.loginUrl ? `link: ${String(deviceAuth.loginUrl)}` : "",
-          deviceAuth?.detail ? `deviceDetail: ${String(deviceAuth.detail)}` : "",
-        ]
-          .filter(Boolean)
-          .join("\n"),
-      );
-    } catch (error) {
-      await ctx.reply(`Codex status failed: ${sanitizeError(error)}`);
-    }
-    return true;
-  }
-
-  if (command === "/codex_login" || command === "/codex_switch") {
-    try {
-      const response = await apiPost("/api/system/codex/device_auth/start", {});
-      const statusLabel = String(response?.status ?? "pending");
-      const loginUrl = String(response?.loginUrl ?? "").trim();
-      const code = String(response?.code ?? "").trim();
-      if (!loginUrl || !code) {
+    if (command === "/health") {
+      try {
+        const health = await apiGet<HealthResponse>("/api/health");
         await ctx.reply(
-          "Codex login flow started, but code details were not ready yet. Retry /codex_login.",
+          [
+            "Engine health:",
+            `ok: ${Boolean(health?.ok)}`,
+            `service: ${String(health?.service ?? "-")}`,
+            `botCount: ${Number(health?.botCount ?? 0)}`,
+            `webPort: ${String(health?.webPort ?? "-")}`,
+          ].join("\n"),
         );
+      } catch (error) {
+        await ctx.reply(`Health failed: ${sanitizeError(error)}`);
+      }
+      return true;
+    }
+
+    if (command === "/bots") {
+      try {
+        await renderBotsMenu(ctx, { editMessage: false });
+      } catch (error) {
+        await ctx.reply(`Bots list failed: ${sanitizeError(error)}`);
+      }
+      return true;
+    }
+
+    if (command === "/codex_status") {
+      try {
+        const status = await apiGet<CodexStatusResponse>("/api/system/codex/status");
+        const deviceAuth = status?.deviceAuth ?? {};
+        const deviceStatus = String(deviceAuth?.status ?? "idle");
+        await ctx.reply(
+          [
+            "Codex account:",
+            `configured: ${status?.configured ? "yes" : "no"}`,
+            `binary: ${String(status?.codexBin ?? "-")}`,
+            status?.detail ? `detail: ${String(status.detail)}` : "",
+            `deviceAuth: ${deviceStatus}`,
+            deviceAuth?.code ? `code: ${String(deviceAuth.code)}` : "",
+            deviceAuth?.loginUrl ? `link: ${String(deviceAuth.loginUrl)}` : "",
+            deviceAuth?.detail ? `deviceDetail: ${String(deviceAuth.detail)}` : "",
+          ]
+            .filter(Boolean)
+            .join("\n"),
+        );
+      } catch (error) {
+        await ctx.reply(`Codex status failed: ${sanitizeError(error)}`);
+      }
+      return true;
+    }
+
+    if (command === "/codex_login" || command === "/codex_switch") {
+      try {
+        clearCodexLoginWatcher(flowKey);
+        const response = await apiPost<DeviceAuthStartResponse>(
+          "/api/system/codex/device_auth/start",
+          {},
+        );
+        const statusLabel = String(response?.status ?? "pending");
+        const loginUrl = String(response?.loginUrl ?? "").trim();
+        const code = String(response?.code ?? "").trim();
+        if (!loginUrl || !code) {
+          await ctx.reply(
+            "Codex login flow started, but code details were not ready yet. Retry /codex_login.",
+          );
+          return true;
+        }
+
+        await ctx.reply(
+          [
+            `Codex login flow: ${statusLabel}`,
+            `1) Open: ${loginUrl}`,
+            `2) Enter code: ${code}`,
+            "3) Finish sign-in on your phone",
+            "Copilot Hub will apply the new account automatically when login succeeds.",
+            "Use /cancel to abort this login flow.",
+          ].join("\n"),
+        );
+        const watcherToken = startCodexLoginWatcher(flowKey);
+        void watchCodexLoginCompletion({
+          ctx,
+          runtime,
+          flowKey,
+          watcherToken,
+        });
+      } catch (error) {
+        await ctx.reply(`Codex login start failed: ${sanitizeError(error)}`);
+      }
+      return true;
+    }
+
+    if (command === "/codex_switch_key") {
+      if (createFlows.has(flowKey) || codexSwitchFlows.has(flowKey)) {
+        await ctx.reply("Another operation is active. Send /cancel first.");
         return true;
       }
 
+      codexSwitchFlows.set(flowKey, {
+        createdAt: Date.now(),
+        step: "api_key",
+      });
+
       await ctx.reply(
         [
-          `Codex login flow: ${statusLabel}`,
-          `1) Open: ${loginUrl}`,
-          `2) Enter code: ${code}`,
-          "3) Finish sign-in on your phone, then run /codex_status",
-          "Use /cancel to abort this login flow.",
+          "Codex account switch started.",
+          "Send your Codex API key now (example: sk-...).",
+          "Running agents will restart automatically after successful switch.",
+          "Use /cancel to stop.",
         ].join("\n"),
       );
-    } catch (error) {
-      await ctx.reply(`Codex login start failed: ${sanitizeError(error)}`);
-    }
-    return true;
-  }
-
-  if (command === "/codex_switch_key") {
-    if (createFlows.has(flowKey) || codexSwitchFlows.has(flowKey)) {
-      await ctx.reply("Another operation is active. Send /cancel first.");
       return true;
     }
 
-    codexSwitchFlows.set(flowKey, {
-      createdAt: Date.now(),
-      step: "api_key",
-    });
+    if (command === "/create_agent") {
+      const existing = createFlows.get(flowKey);
+      if (existing) {
+        await ctx.reply("A create flow is already active. Send /cancel to abort it first.");
+        return true;
+      }
 
-    await ctx.reply(
-      [
-        "Codex account switch started.",
-        "Send your Codex API key now (example: sk-...).",
-        "Running agents will restart automatically after successful switch.",
-        "Use /cancel to stop.",
-      ].join("\n"),
-    );
-    return true;
-  }
+      createFlows.set(flowKey, {
+        createdAt: Date.now(),
+        step: "token",
+        token: null,
+        tokenInfo: null,
+        botId: null,
+      });
 
-  if (command === "/create_agent") {
-    const existing = createFlows.get(flowKey);
-    if (existing) {
-      await ctx.reply("A create flow is already active. Send /cancel to abort it first.");
+      await ctx.reply(
+        [
+          "Create agent wizard started.",
+          "Step 1: send Telegram bot token.",
+          "Format: 123456789:ABC...",
+          "Use /cancel to stop.",
+        ].join("\n"),
+      );
       return true;
     }
 
-    createFlows.set(flowKey, {
-      createdAt: Date.now(),
-      step: "token",
-      token: null,
-      tokenInfo: null,
-      botId: null,
-    });
+    if (command === "/set_model") {
+      const tokenCount = String(text ?? "")
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean).length;
+      if (tokenCount <= 1) {
+        await renderSetModelAgentMenu(ctx, { editMessage: false });
+        return true;
+      }
 
-    await ctx.reply(
-      [
-        "Create agent wizard started.",
-        "Step 1: send Telegram bot token.",
-        "Format: 123456789:ABC...",
-        "Use /cancel to stop.",
-      ].join("\n"),
-    );
-    return true;
-  }
+      const parsed = parseSetModelCommand(text, BOT_ID_PATTERN);
+      if (!parsed.ok) {
+        await renderSetModelAgentMenu(ctx, {
+          editMessage: false,
+          notice: "Choose the agent from the list below.",
+        });
+        return true;
+      }
 
-  if (command === "/cancel") {
-    const createDeleted = createFlows.delete(flowKey);
-    const switchDeleted = codexSwitchFlows.delete(flowKey);
-    let remoteCanceled = false;
-    try {
-      const canceled = await apiPost("/api/system/codex/device_auth/cancel", {});
-      remoteCanceled = canceled?.canceled === true;
-    } catch {
-      remoteCanceled = false;
+      const botState = await fetchBotById(parsed.botId);
+      if (!botState) {
+        await ctx.reply(`Agent '${parsed.botId}' not found.`);
+        return true;
+      }
+
+      await applyBotModelPolicy({
+        apiPost,
+        botId: parsed.botId,
+        botState,
+        model: parsed.model,
+      });
+
+      const modelLabel = parsed.model ? parsed.model : "auto (workspace default)";
+      await ctx.reply(
+        [
+          `Model updated for '${parsed.botId}': ${modelLabel}`,
+          "Change applies on next message while preserving conversation history.",
+        ].join("\n"),
+      );
+      return true;
     }
-    await ctx.reply(
-      createDeleted || switchDeleted || remoteCanceled
-        ? "Current operation canceled."
-        : "No active operation.",
-    );
+
+    if (command === "/set_model_all") {
+      const tokenCount = String(text ?? "")
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean).length;
+      if (tokenCount <= 1) {
+        await renderGlobalModelMenu(ctx, { editMessage: false });
+        return true;
+      }
+
+      const parsed = parseSetModelAllCommand(text);
+      if (!parsed.ok) {
+        await ctx.reply(parsed.error);
+        return true;
+      }
+
+      const bots = await fetchBots();
+      if (bots.length === 0) {
+        await ctx.reply("No agents found.");
+        return true;
+      }
+
+      const result = await applyModelPolicyToBots({
+        apiPost,
+        bots,
+        model: parsed.model,
+      });
+      const modelLabel = parsed.model ? parsed.model : "auto (workspace default)";
+      const lines = [
+        `Model updated for all agents: ${modelLabel}`,
+        `Updated: ${result.updatedBotIds.length}/${bots.length}`,
+      ];
+      if (result.failures.length > 0) {
+        const failedIds = result.failures.map((entry) => entry.botId).filter(Boolean);
+        lines.push(`Warnings: ${result.failures.length}`);
+        if (failedIds.length > 0) {
+          lines.push(`Failed: ${failedIds.join(", ")}`);
+        }
+      }
+      lines.push("Change applies on next message while preserving conversation history.");
+      await ctx.reply(lines.join("\n"));
+      return true;
+    }
+
+    if (command === "/cancel") {
+      const createDeleted = createFlows.delete(flowKey);
+      const switchDeleted = codexSwitchFlows.delete(flowKey);
+      const loginWatcherCanceled = clearCodexLoginWatcher(flowKey);
+      let remoteCanceled = false;
+      try {
+        const canceled = await apiPost<DeviceAuthCancelResponse>(
+          "/api/system/codex/device_auth/cancel",
+          {},
+        );
+        remoteCanceled = canceled?.canceled === true;
+      } catch {
+        remoteCanceled = false;
+      }
+      await ctx.reply(
+        createDeleted || switchDeleted || remoteCanceled || loginWatcherCanceled
+          ? "Current operation canceled."
+          : "No active operation.",
+      );
+      return true;
+    }
+
+    return false;
+  } catch (error) {
+    await ctx.reply(`Command failed: ${sanitizeError(error)}`);
     return true;
   }
-
-  return false;
 }
 
-export async function maybeHandleHubOpsFollowUp({ ctx, runtime, channelId }) {
+export async function maybeHandleHubOpsFollowUp({
+  ctx,
+  runtime,
+  channelId,
+}: {
+  ctx: HubOpsContext;
+  runtime?: HubRuntimeInfo | null;
+  channelId?: string | null;
+}): Promise<boolean> {
   cleanupState();
 
   const text = String(ctx.message?.text ?? "").trim();
@@ -266,7 +580,7 @@ export async function maybeHandleHubOpsFollowUp({ ctx, runtime, channelId }) {
   }
 
   if (flow.step === "bot_id") {
-    const suggestedBotId = suggestBotIdFromUsername(flow.tokenInfo?.username);
+    const suggestedBotId = suggestBotIdFromUsername(flow.tokenInfo?.username ?? null);
     const candidate = normalizeBotIdInput(text, suggestedBotId);
     if (!candidate || !BOT_ID_PATTERN.test(candidate)) {
       await ctx.reply("Invalid agent id. Use letters, numbers, underscore or dash.");
@@ -304,7 +618,7 @@ export async function maybeHandleHubOpsFollowUp({ ctx, runtime, channelId }) {
     }
 
     try {
-      const result = await apiPost("/api/bots/create", {
+      const result = await apiPost<CreateBotResponse>("/api/bots/create", {
         agent: buildTelegramAgentDefinition({
           botId: flow.botId,
           token: flow.token,
@@ -331,7 +645,17 @@ export async function maybeHandleHubOpsFollowUp({ ctx, runtime, channelId }) {
   return true;
 }
 
-async function handleCodexSwitchFlow({ ctx, flowKey, flow, text }) {
+async function handleCodexSwitchFlow({
+  ctx,
+  flowKey,
+  flow,
+  text,
+}: {
+  ctx: HubOpsContext;
+  flowKey: string;
+  flow: CodexSwitchFlow;
+  text: string;
+}): Promise<boolean> {
   if (flow.step !== "api_key") {
     codexSwitchFlows.delete(flowKey);
     await ctx.reply("Flow reset. Use /codex_switch_key to start again.");
@@ -347,7 +671,7 @@ async function handleCodexSwitchFlow({ ctx, flowKey, flow, text }) {
   await maybeDeleteIncomingMessage(ctx);
 
   try {
-    const result = await apiPost("/api/system/codex/switch_api_key", {
+    const result = await apiPost<CodexSwitchApiKeyResponse>("/api/system/codex/switch_api_key", {
       apiKey,
     });
     codexSwitchFlows.delete(flowKey);
@@ -380,7 +704,7 @@ async function handleCodexSwitchFlow({ ctx, flowKey, flow, text }) {
   }
 }
 
-export async function maybeHandleHubOpsCallback({ ctx }) {
+export async function maybeHandleHubOpsCallback({ ctx }: { ctx: HubOpsContext }): Promise<boolean> {
   const rawData = String(ctx.callbackQuery?.data ?? "").trim();
   if (!rawData.startsWith("hub:")) {
     return false;
@@ -407,6 +731,33 @@ export async function maybeHandleHubOpsCallback({ ctx }) {
       return true;
     }
 
+    if (action.type === "model_home") {
+      await renderSetModelAgentMenu(ctx, {
+        sessionId: action.sessionId,
+        editMessage: true,
+      });
+      await answerCallbackQuerySafe(ctx);
+      return true;
+    }
+
+    if (action.type === "model_open") {
+      await renderBotModelMenu(ctx, {
+        sessionId: action.sessionId,
+        index: action.index,
+      });
+      await answerCallbackQuerySafe(ctx);
+      return true;
+    }
+
+    if (action.type === "global_model_open") {
+      await renderGlobalModelMenu(ctx, {
+        sessionId: action.sessionId,
+        editMessage: true,
+      });
+      await answerCallbackQuerySafe(ctx);
+      return true;
+    }
+
     if (action.type === "back") {
       await renderBotsMenu(ctx, { editMessage: true });
       await answerCallbackQuerySafe(ctx);
@@ -417,6 +768,55 @@ export async function maybeHandleHubOpsCallback({ ctx }) {
     if (!session) {
       await renderBotsMenu(ctx, { editMessage: true });
       await answerCallbackQuerySafe(ctx, "Menu expired. Refreshed.");
+      return true;
+    }
+
+    if (action.type === "global_model") {
+      const selection = resolveModelSelectionFromAction({
+        session,
+        profileId: action.profileId,
+      });
+      if (!selection.ok) {
+        await renderGlobalModelMenu(ctx, {
+          sessionId: action.sessionId,
+          editMessage: true,
+          notice: "Model options expired. Open /set_model_all again.",
+        });
+        await answerCallbackQuerySafe(ctx, "Model menu expired");
+        return true;
+      }
+
+      const bots = await fetchBots();
+      if (bots.length === 0) {
+        await renderBotsMenu(ctx, { editMessage: true, notice: "No agents found." });
+        await answerCallbackQuerySafe(ctx, "No agents");
+        return true;
+      }
+
+      const result = await applyModelPolicyToBots({
+        apiPost,
+        bots,
+        model: selection.model,
+      });
+      const lines = [
+        `Model updated for all agents: ${selection.label}`,
+        `Updated: ${result.updatedBotIds.length}/${bots.length}`,
+      ];
+      if (result.failures.length > 0) {
+        const failedIds = result.failures.map((entry) => entry.botId).filter(Boolean);
+        lines.push(`Warnings: ${result.failures.length}`);
+        if (failedIds.length > 0) {
+          lines.push(`Failed: ${failedIds.join(", ")}`);
+        }
+      }
+      lines.push("Change applies on next message while preserving conversation history.");
+
+      await renderGlobalModelMenu(ctx, {
+        sessionId: action.sessionId,
+        editMessage: true,
+        notice: lines.join("\n"),
+      });
+      await answerCallbackQuerySafe(ctx, "Model updated");
       return true;
     }
 
@@ -437,6 +837,10 @@ export async function maybeHandleHubOpsCallback({ ctx }) {
     }
 
     if (action.type === "policy") {
+      if (!isPolicyProfileId(action.profileId)) {
+        await answerCallbackQuerySafe(ctx, "Invalid profile.");
+        return true;
+      }
       const profile = POLICY_PROFILES[action.profileId];
       if (!profile) {
         await answerCallbackQuerySafe(ctx, "Invalid profile.");
@@ -454,6 +858,86 @@ export async function maybeHandleHubOpsCallback({ ctx }) {
         notice: `Policy updated: ${profile.label} (${profile.hint})`,
       });
       await answerCallbackQuerySafe(ctx, "Policy updated");
+      return true;
+    }
+
+    if (action.type === "model") {
+      const botState = await fetchBotById(botId);
+      if (!botState) {
+        await renderBotsMenu(ctx, { editMessage: true, notice: `Agent '${botId}' not found.` });
+        await answerCallbackQuerySafe(ctx, "Agent not found");
+        return true;
+      }
+
+      const selection = resolveModelSelectionFromAction({
+        session,
+        profileId: action.profileId,
+      });
+      if (!selection.ok) {
+        await renderBotActions(ctx, {
+          sessionId: action.sessionId,
+          index: action.index,
+          notice: "Model options expired. Open /bots again.",
+        });
+        await answerCallbackQuerySafe(ctx, "Model menu expired");
+        return true;
+      }
+
+      await applyBotModelPolicy({
+        apiPost,
+        botId,
+        botState,
+        model: selection.model,
+      });
+
+      await renderBotActions(ctx, {
+        sessionId: action.sessionId,
+        index: action.index,
+        notice: `Model updated: ${selection.label}`,
+      });
+      await answerCallbackQuerySafe(ctx, "Model updated");
+      return true;
+    }
+
+    if (action.type === "model_apply") {
+      const botState = await fetchBotById(botId);
+      if (!botState) {
+        await renderSetModelAgentMenu(ctx, {
+          sessionId: action.sessionId,
+          editMessage: true,
+          notice: `Agent '${botId}' not found.`,
+        });
+        await answerCallbackQuerySafe(ctx, "Agent not found");
+        return true;
+      }
+
+      const selection = resolveModelSelectionFromAction({
+        session,
+        profileId: action.profileId,
+      });
+      if (!selection.ok) {
+        await renderBotModelMenu(ctx, {
+          sessionId: action.sessionId,
+          index: action.index,
+          notice: "Model options expired. Open /set_model again.",
+        });
+        await answerCallbackQuerySafe(ctx, "Model menu expired");
+        return true;
+      }
+
+      await applyBotModelPolicy({
+        apiPost,
+        botId,
+        botState,
+        model: selection.model,
+      });
+
+      await renderBotModelMenu(ctx, {
+        sessionId: action.sessionId,
+        index: action.index,
+        notice: `Model updated: ${selection.label}`,
+      });
+      await answerCallbackQuerySafe(ctx, "Model updated");
       return true;
     }
 
@@ -511,7 +995,7 @@ export async function maybeHandleHubOpsCallback({ ctx }) {
   }
 }
 
-function buildHelpText(runtimeName) {
+function buildHelpText(runtimeName: string | null | undefined): string {
   return [
     `${String(runtimeName ?? "Copilot Hub")}`,
     "",
@@ -523,6 +1007,8 @@ function buildHelpText(runtimeName) {
     "/codex_status",
     "/codex_login",
     "/codex_switch_key",
+    "/set_model",
+    "/set_model_all",
     "/cancel",
     "",
     "Codex account:",
@@ -535,12 +1021,19 @@ function buildHelpText(runtimeName) {
     "Semi Auto: workspace write + ask on failures",
     "Full: no approval prompts",
     "All agent actions start from that agent workspace.",
+    "Model changes apply on next message and keep conversation history.",
+    "/set_model opens a clickable agent->model flow.",
+    "/set_model_all opens a clickable model list for all agents.",
     "",
     "For development tasks, send a normal message to the assistant.",
   ].join("\n");
 }
 
-function buildFlowKey(runtimeId, channelId, chatId) {
+function buildFlowKey(
+  runtimeId: string | null | undefined,
+  channelId: string | null | undefined,
+  chatId: string,
+): string {
   return `${String(runtimeId ?? "hub")}::${String(channelId ?? "telegram")}::${String(chatId ?? "")}`;
 }
 
@@ -567,9 +1060,19 @@ function cleanupState() {
       codexSwitchFlows.delete(key);
     }
   }
+
+  for (const [key, watcher] of codexLoginWatchers.entries()) {
+    const startedAt = Number(watcher?.startedAt ?? 0);
+    if (!Number.isFinite(startedAt) || now - startedAt > CODEX_LOGIN_WATCH_TIMEOUT_MS * 2) {
+      codexLoginWatchers.delete(key);
+    }
+  }
 }
 
-async function renderBotsMenu(ctx, { editMessage = false, notice = "" } = {}) {
+async function renderBotsMenu(
+  ctx: HubOpsContext,
+  { editMessage = false, notice = "" }: { editMessage?: boolean; notice?: string } = {},
+): Promise<void> {
   const bots = await fetchBots();
   const chatId = getChatId(ctx);
   const sessionId = createMenuSession(chatId, bots);
@@ -608,7 +1111,10 @@ async function renderBotsMenu(ctx, { editMessage = false, notice = "" } = {}) {
   });
 }
 
-async function renderBotActions(ctx, { sessionId, index, notice = "" }) {
+async function renderBotActions(
+  ctx: HubOpsContext,
+  { sessionId, index, notice = "" }: { sessionId: string; index: number; notice?: string },
+): Promise<void> {
   const session = getMenuSession(sessionId, ctx);
   const botId = getBotIdFromSession(session, index);
   if (!botId) {
@@ -626,6 +1132,17 @@ async function renderBotActions(ctx, { sessionId, index, notice = "" }) {
     botState?.provider?.options && typeof botState.provider.options === "object"
       ? botState.provider.options
       : {};
+  const currentModel = String(providerOptions.model ?? "").trim();
+  const botPolicyState = getBotPolicyState(botState);
+  const modelCatalog = await fetchCodexModelOptions(apiGet);
+  const modelOptions = buildSessionModelOptions({
+    catalog: modelCatalog.models,
+    currentModel,
+  });
+  if (session) {
+    session.modelOptions = modelOptions;
+    menuSessions.set(sessionId, session);
+  }
 
   const lines = [];
   if (notice) {
@@ -635,8 +1152,9 @@ async function renderBotActions(ctx, { sessionId, index, notice = "" }) {
     `Agent: ${botState.id}`,
     `running: ${botState.running ? "yes" : "no"}`,
     `telegram: ${botState.telegramRunning ? "yes" : "no"}`,
-    `sandboxMode: ${String(providerOptions.sandboxMode ?? "-")}`,
-    `approvalPolicy: ${String(providerOptions.approvalPolicy ?? "-")}`,
+    `sandboxMode: ${botPolicyState.sandboxMode}`,
+    `approvalPolicy: ${botPolicyState.approvalPolicy}`,
+    `model: ${formatModelLabel(providerOptions.model)}`,
     "",
     "Policy quick guide:",
     "Safe = read-only + approval prompts",
@@ -644,18 +1162,28 @@ async function renderBotActions(ctx, { sessionId, index, notice = "" }) {
     "Semi Auto = workspace write + ask on failures",
     "Full = no approval prompts",
     "All actions start from this agent workspace.",
+    "Model changes apply on next message and keep conversation history.",
+    modelCatalog.available
+      ? `Available models: ${modelCatalog.models.length}`
+      : "Available models: unavailable (you can still use /set_model).",
     "",
     "Choose an action:",
   );
 
   await editMessageOrReply(ctx, lines.join("\n"), {
     reply_markup: {
-      inline_keyboard: buildBotActionsKeyboard(sessionId, index),
+      inline_keyboard: buildBotActionsKeyboard(sessionId, index, {
+        modelOptions,
+        currentModel,
+      }),
     },
   });
 }
 
-async function renderResetConfirm(ctx, { sessionId, index, botId }) {
+async function renderResetConfirm(
+  ctx: HubOpsContext,
+  { sessionId, index, botId }: { sessionId: string; index: number; botId: string },
+): Promise<void> {
   await editMessageOrReply(
     ctx,
     [`Reset context for '${botId}'?`, "This clears the current web thread context."].join("\n"),
@@ -673,7 +1201,10 @@ async function renderResetConfirm(ctx, { sessionId, index, botId }) {
   );
 }
 
-async function renderDeleteConfirm(ctx, { sessionId, index, botId }) {
+async function renderDeleteConfirm(
+  ctx: HubOpsContext,
+  { sessionId, index, botId }: { sessionId: string; index: number; botId: string },
+): Promise<void> {
   await editMessageOrReply(
     ctx,
     [`Delete agent '${botId}'?`, "This stops and removes the agent from runtime."].join("\n"),
@@ -691,11 +1222,14 @@ async function renderDeleteConfirm(ctx, { sessionId, index, botId }) {
   );
 }
 
-function buildBotsMenuKeyboard(sessionId, bots) {
-  const rows = [];
+function buildBotsMenuKeyboard(sessionId: string, bots: BotState[]): InlineKeyboardButton[][] {
+  const rows: InlineKeyboardButton[][] = [];
 
   for (let index = 0; index < bots.length; index += 1) {
     const botState = bots[index];
+    if (!botState) {
+      continue;
+    }
     const status = botState.running ? "ON" : "OFF";
     rows.push([
       { text: `${botState.id} (${status})`, callback_data: `hub:o:${sessionId}:${index}` },
@@ -703,12 +1237,232 @@ function buildBotsMenuKeyboard(sessionId, bots) {
   }
 
   rows.push([{ text: "Refresh", callback_data: `hub:r:${sessionId}` }]);
+  rows.push([{ text: "Set model for all", callback_data: `hub:ga:${sessionId}` }]);
   rows.push([{ text: "Create agent", callback_data: "hub:create" }]);
   return rows;
 }
 
-function buildBotActionsKeyboard(sessionId, index) {
-  return [
+async function renderGlobalModelMenu(
+  ctx: HubOpsContext,
+  {
+    sessionId = "",
+    editMessage = false,
+    notice = "",
+  }: { sessionId?: string; editMessage?: boolean; notice?: string } = {},
+): Promise<void> {
+  const bots = await fetchBots();
+  if (bots.length === 0) {
+    await renderBotsMenu(ctx, {
+      editMessage,
+      notice: notice || "No agents found.",
+    });
+    return;
+  }
+
+  const chatId = getChatId(ctx);
+  const activeSessionId = sessionId || createMenuSession(chatId, bots);
+  const session = getMenuSession(activeSessionId, ctx);
+  if (!session) {
+    await renderBotsMenu(ctx, {
+      editMessage,
+      notice: "Menu expired. Open /set_model_all again.",
+    });
+    return;
+  }
+
+  const sharedModel = resolveSharedModelForBots(bots);
+  const modelCatalog = await fetchCodexModelOptions(apiGet);
+  const currentModel = sharedModel.mode === "uniform" ? (sharedModel.model ?? "") : "__mixed__";
+  const modelOptions = buildSessionModelOptions({
+    catalog: modelCatalog.models,
+    currentModel,
+  });
+  session.modelOptions = modelOptions;
+  menuSessions.set(activeSessionId, session);
+
+  const lines = [];
+  if (notice) {
+    lines.push(notice, "");
+  }
+  lines.push("Global model for all agents:");
+  lines.push(`agents: ${bots.length}`);
+  lines.push(
+    `current: ${
+      sharedModel.mode === "uniform"
+        ? formatModelLabel(sharedModel.model)
+        : "mixed (agents use different models)"
+    }`,
+  );
+  lines.push(
+    modelCatalog.available
+      ? `available models: ${modelCatalog.models.length}`
+      : "available models: unavailable right now",
+  );
+  lines.push("", "Choose a model:");
+
+  const keyboard = buildGlobalModelKeyboard(activeSessionId, {
+    modelOptions,
+    currentModel,
+    hasMixedSelection: sharedModel.mode === "mixed",
+  });
+
+  if (editMessage) {
+    await editMessageOrReply(ctx, lines.join("\n"), {
+      reply_markup: {
+        inline_keyboard: keyboard,
+      },
+    });
+    return;
+  }
+
+  await ctx.reply(lines.join("\n"), {
+    reply_markup: {
+      inline_keyboard: keyboard,
+    },
+  });
+}
+
+async function renderSetModelAgentMenu(
+  ctx: HubOpsContext,
+  {
+    sessionId = "",
+    editMessage = false,
+    notice = "",
+  }: { sessionId?: string; editMessage?: boolean; notice?: string } = {},
+): Promise<void> {
+  const bots = await fetchBots();
+  if (bots.length === 0) {
+    await renderBotsMenu(ctx, {
+      editMessage,
+      notice: notice || "No agents found.",
+    });
+    return;
+  }
+
+  const chatId = getChatId(ctx);
+  const activeSessionId = sessionId || createMenuSession(chatId, bots);
+  const session = getMenuSession(activeSessionId, ctx);
+  if (!session) {
+    await renderBotsMenu(ctx, {
+      editMessage,
+      notice: "Menu expired. Open /set_model again.",
+    });
+    return;
+  }
+
+  const lines = [];
+  if (notice) {
+    lines.push(notice, "");
+  }
+  lines.push("Set model: choose an agent.");
+  lines.push(`agents: ${bots.length}`);
+  lines.push("", "Pick one:");
+
+  const keyboard = buildSetModelAgentKeyboard(activeSessionId, bots);
+  if (editMessage) {
+    await editMessageOrReply(ctx, lines.join("\n"), {
+      reply_markup: {
+        inline_keyboard: keyboard,
+      },
+    });
+    return;
+  }
+
+  await ctx.reply(lines.join("\n"), {
+    reply_markup: {
+      inline_keyboard: keyboard,
+    },
+  });
+}
+
+async function renderBotModelMenu(
+  ctx: HubOpsContext,
+  {
+    sessionId,
+    index,
+    editMessage = true,
+    notice = "",
+  }: { sessionId: string; index: number; editMessage?: boolean; notice?: string },
+): Promise<void> {
+  const session = getMenuSession(sessionId, ctx);
+  const botId = getBotIdFromSession(session, index);
+  if (!botId) {
+    await renderSetModelAgentMenu(ctx, {
+      sessionId,
+      editMessage: true,
+      notice: "Agent not found. Refreshed.",
+    });
+    return;
+  }
+
+  const botState = await fetchBotById(botId);
+  if (!botState) {
+    await renderSetModelAgentMenu(ctx, {
+      sessionId,
+      editMessage: true,
+      notice: `Agent '${botId}' not found.`,
+    });
+    return;
+  }
+
+  const providerOptions =
+    botState?.provider?.options && typeof botState.provider.options === "object"
+      ? botState.provider.options
+      : {};
+  const currentModel = String(providerOptions.model ?? "").trim();
+  const modelCatalog = await fetchCodexModelOptions(apiGet);
+  const modelOptions = buildSessionModelOptions({
+    catalog: modelCatalog.models,
+    currentModel,
+  });
+  if (session) {
+    session.modelOptions = modelOptions;
+    menuSessions.set(sessionId, session);
+  }
+
+  const lines = [];
+  if (notice) {
+    lines.push(notice, "");
+  }
+  lines.push(`Agent '${botId}' model:`);
+  lines.push(`current: ${formatModelLabel(currentModel)}`);
+  lines.push(
+    modelCatalog.available
+      ? `available models: ${modelCatalog.models.length}`
+      : "available models: unavailable right now",
+  );
+  lines.push("", "Choose a model:");
+
+  const keyboard = buildBotModelKeyboard(sessionId, index, {
+    modelOptions,
+    currentModel,
+  });
+
+  if (editMessage) {
+    await editMessageOrReply(ctx, lines.join("\n"), {
+      reply_markup: {
+        inline_keyboard: keyboard,
+      },
+    });
+    return;
+  }
+
+  await ctx.reply(lines.join("\n"), {
+    reply_markup: {
+      inline_keyboard: keyboard,
+    },
+  });
+}
+
+function buildBotActionsKeyboard(
+  sessionId: string,
+  index: number,
+  {
+    modelOptions = [],
+    currentModel = "",
+  }: { modelOptions?: ModelSelectionOption[]; currentModel?: string } = {},
+): InlineKeyboardButton[][] {
+  const rows: InlineKeyboardButton[][] = [
     [
       { text: "Safe (read-only)", callback_data: `hub:p:${sessionId}:${index}:safe` },
       { text: "Standard (ask)", callback_data: `hub:p:${sessionId}:${index}:standard` },
@@ -717,13 +1471,139 @@ function buildBotActionsKeyboard(sessionId, index) {
       { text: "Semi (fail ask)", callback_data: `hub:p:${sessionId}:${index}:semi_auto` },
       { text: "Full (no prompts)", callback_data: `hub:p:${sessionId}:${index}:full_auto` },
     ],
+    [
+      {
+        text: formatModelButtonText("Auto", currentModel === ""),
+        callback_data: `hub:m:${sessionId}:${index}:auto`,
+      },
+    ],
+  ];
+
+  for (const option of modelOptions) {
+    const isCurrent =
+      String(currentModel ?? "")
+        .trim()
+        .toLowerCase() ===
+      String(option.model ?? "")
+        .trim()
+        .toLowerCase();
+    rows.push([
+      {
+        text: formatModelButtonText(option.label, isCurrent),
+        callback_data: `hub:m:${sessionId}:${index}:${option.key}`,
+      },
+    ]);
+  }
+
+  rows.push(
     [{ text: "Reset Context", callback_data: `hub:ra:${sessionId}:${index}` }],
     [{ text: "Delete Agent", callback_data: `hub:da:${sessionId}:${index}` }],
     [{ text: "Back to bots", callback_data: "hub:back" }],
-  ];
+  );
+  return rows;
 }
 
-function createMenuSession(chatId, bots) {
+function buildSetModelAgentKeyboard(sessionId: string, bots: BotState[]): InlineKeyboardButton[][] {
+  const rows: InlineKeyboardButton[][] = [];
+  for (let index = 0; index < bots.length; index += 1) {
+    const botState = bots[index];
+    if (!botState) {
+      continue;
+    }
+    const status = botState.running ? "ON" : "OFF";
+    rows.push([
+      {
+        text: `${botState.id} (${status})`,
+        callback_data: `hub:mo:${sessionId}:${index}`,
+      },
+    ]);
+  }
+  rows.push([{ text: "Refresh", callback_data: `hub:sm:${sessionId}` }]);
+  rows.push([{ text: "Back to bots", callback_data: "hub:back" }]);
+  return rows;
+}
+
+function buildBotModelKeyboard(
+  sessionId: string,
+  index: number,
+  {
+    modelOptions = [],
+    currentModel = "",
+  }: { modelOptions?: ModelSelectionOption[]; currentModel?: string } = {},
+): InlineKeyboardButton[][] {
+  const rows: InlineKeyboardButton[][] = [
+    [
+      {
+        text: formatModelButtonText("Auto", currentModel === ""),
+        callback_data: `hub:mm:${sessionId}:${index}:auto`,
+      },
+    ],
+  ];
+
+  for (const option of modelOptions) {
+    const isCurrent =
+      String(currentModel ?? "")
+        .trim()
+        .toLowerCase() ===
+      String(option.model ?? "")
+        .trim()
+        .toLowerCase();
+    rows.push([
+      {
+        text: formatModelButtonText(option.label, isCurrent),
+        callback_data: `hub:mm:${sessionId}:${index}:${option.key}`,
+      },
+    ]);
+  }
+
+  rows.push([{ text: "Back to agents", callback_data: `hub:sm:${sessionId}` }]);
+  rows.push([{ text: "Back to bots", callback_data: "hub:back" }]);
+  return rows;
+}
+
+function buildGlobalModelKeyboard(
+  sessionId: string,
+  {
+    modelOptions = [],
+    currentModel = "",
+    hasMixedSelection = false,
+  }: {
+    modelOptions?: ModelSelectionOption[];
+    currentModel?: string;
+    hasMixedSelection?: boolean;
+  } = {},
+): InlineKeyboardButton[][] {
+  const rows: InlineKeyboardButton[][] = [
+    [
+      {
+        text: formatModelButtonText("Auto", !hasMixedSelection && currentModel === ""),
+        callback_data: `hub:gm:${sessionId}:auto`,
+      },
+    ],
+  ];
+
+  for (const option of modelOptions) {
+    const isCurrent =
+      !hasMixedSelection &&
+      String(currentModel ?? "")
+        .trim()
+        .toLowerCase() ===
+        String(option.model ?? "")
+          .trim()
+          .toLowerCase();
+    rows.push([
+      {
+        text: formatModelButtonText(option.label, isCurrent),
+        callback_data: `hub:gm:${sessionId}:${option.key}`,
+      },
+    ]);
+  }
+
+  rows.push([{ text: "Back to bots", callback_data: "hub:back" }]);
+  return rows;
+}
+
+function createMenuSession(chatId: string, bots: BotState[]): string {
   let sessionId = "";
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const candidate = randomBytes(4).toString("hex");
@@ -741,12 +1621,13 @@ function createMenuSession(chatId, bots) {
     chatId,
     createdAt: Date.now(),
     botIds: bots.map((entry) => String(entry?.id ?? "").trim()).filter(Boolean),
+    modelOptions: [],
   });
 
   return sessionId;
 }
 
-function getMenuSession(sessionId, ctx) {
+function getMenuSession(sessionId: string, ctx: HubOpsContext): MenuSession | null {
   const session = menuSessions.get(sessionId);
   if (!session) {
     return null;
@@ -760,7 +1641,7 @@ function getMenuSession(sessionId, ctx) {
   return session;
 }
 
-function getBotIdFromSession(session, index) {
+function getBotIdFromSession(session: MenuSession | null, index: number): string | null {
   if (!session) {
     return null;
   }
@@ -773,7 +1654,7 @@ function getBotIdFromSession(session, index) {
   return botId || null;
 }
 
-function parseMenuAction(rawData) {
+function parseMenuAction(rawData: string): HubOpsMenuAction | null {
   const data = String(rawData ?? "").trim();
   if (!data || !data.startsWith("hub:")) {
     return null;
@@ -793,18 +1674,56 @@ function parseMenuAction(rawData) {
   }
 
   const kind = parts[1];
+  if (!kind) {
+    return null;
+  }
 
   if (kind === "r" && parts.length === 3) {
+    const sessionId = parts[2];
+    if (!sessionId) {
+      return null;
+    }
     return {
       type: "refresh",
-      sessionId: parts[2],
+      sessionId,
+    };
+  }
+
+  if (kind === "ga" && parts.length === 3) {
+    const sessionId = parts[2];
+    if (!sessionId) {
+      return null;
+    }
+    return {
+      type: "global_model_open",
+      sessionId,
+    };
+  }
+
+  if (kind === "sm" && parts.length === 3) {
+    const sessionId = parts[2];
+    if (!sessionId) {
+      return null;
+    }
+    return {
+      type: "model_home",
+      sessionId,
     };
   }
 
   if (
-    (kind === "o" || kind === "ra" || kind === "rc" || kind === "da" || kind === "dc") &&
+    (kind === "o" ||
+      kind === "mo" ||
+      kind === "ra" ||
+      kind === "rc" ||
+      kind === "da" ||
+      kind === "dc") &&
     parts.length === 4
   ) {
+    const sessionId = parts[2];
+    if (!sessionId) {
+      return null;
+    }
     const index = parseMenuIndex(parts[3]);
     if (index === null) {
       return null;
@@ -812,20 +1731,25 @@ function parseMenuAction(rawData) {
 
     const mapping = {
       o: "open",
+      mo: "model_open",
       ra: "reset_ask",
       rc: "reset_confirm",
       da: "delete_ask",
       dc: "delete_confirm",
-    };
+    } as const;
+    const actionType = mapping[kind as keyof typeof mapping];
+    if (!actionType) {
+      return null;
+    }
 
     return {
-      type: mapping[kind],
-      sessionId: parts[2],
+      type: actionType,
+      sessionId,
       index,
     };
   }
 
-  if (kind === "p" && parts.length === 5) {
+  if ((kind === "p" || kind === "m" || kind === "mm") && parts.length === 5) {
     const index = parseMenuIndex(parts[3]);
     const profileId = String(parts[4] ?? "")
       .trim()
@@ -833,11 +1757,30 @@ function parseMenuAction(rawData) {
     if (index === null || !profileId) {
       return null;
     }
+    const sessionId = parts[2];
+    if (!sessionId) {
+      return null;
+    }
 
     return {
-      type: "policy",
-      sessionId: parts[2],
+      type: kind === "p" ? "policy" : kind === "m" ? "model" : "model_apply",
+      sessionId,
       index,
+      profileId,
+    };
+  }
+
+  if (kind === "gm" && parts.length === 4) {
+    const sessionId = parts[2];
+    const profileId = String(parts[3] ?? "")
+      .trim()
+      .toLowerCase();
+    if (!sessionId || !profileId) {
+      return null;
+    }
+    return {
+      type: "global_model",
+      sessionId,
       profileId,
     };
   }
@@ -845,7 +1788,30 @@ function parseMenuAction(rawData) {
   return null;
 }
 
-function parseMenuIndex(value) {
+function resolveSharedModelForBots(
+  bots: BotState[],
+): { mode: "uniform"; model: string | null } | { mode: "mixed" } {
+  let normalizedModel: string | null | undefined;
+
+  for (const bot of bots) {
+    const rawModel = bot?.provider?.options?.model;
+    const nextModel = String(rawModel ?? "").trim() || null;
+    if (normalizedModel === undefined) {
+      normalizedModel = nextModel;
+      continue;
+    }
+    if (normalizedModel !== nextModel) {
+      return { mode: "mixed" };
+    }
+  }
+
+  return {
+    mode: "uniform",
+    model: normalizedModel ?? null,
+  };
+}
+
+function parseMenuIndex(value: string | undefined): number | null {
   const index = Number.parseInt(String(value ?? ""), 10);
   if (!Number.isFinite(index) || index < 0 || index > 9999) {
     return null;
@@ -853,18 +1819,19 @@ function parseMenuIndex(value) {
   return index;
 }
 
-function extractCommand(text) {
-  const token =
-    String(text ?? "")
-      .trim()
-      .split(/\s+/)[0] ?? "";
+function extractCommand(text: string): string {
+  const tokenParts = String(text ?? "")
+    .trim()
+    .split(/\s+/);
+  const token = tokenParts[0] ?? "";
   if (!token.startsWith("/")) {
     return "";
   }
-  return token.split("@")[0].toLowerCase();
+  const slashToken = token.split("@")[0];
+  return String(slashToken ?? "").toLowerCase();
 }
 
-function normalizeBotIdInput(value, suggested) {
+function normalizeBotIdInput(value: string, suggested: string | null): string | null {
   const raw = String(value ?? "").trim();
   if (!raw) {
     return null;
@@ -882,7 +1849,7 @@ function normalizeBotIdInput(value, suggested) {
   return raw;
 }
 
-function suggestBotIdFromUsername(username) {
+function suggestBotIdFromUsername(username: string | null): string | null {
   const raw = String(username ?? "")
     .trim()
     .toLowerCase();
@@ -901,7 +1868,13 @@ function suggestBotIdFromUsername(username) {
   return candidate;
 }
 
-function buildTelegramAgentDefinition({ botId, token }) {
+function buildTelegramAgentDefinition({
+  botId,
+  token,
+}: {
+  botId: string | null;
+  token: string | null;
+}) {
   const safeId = String(botId ?? "").trim();
   return {
     id: safeId,
@@ -928,20 +1901,40 @@ function buildTelegramAgentDefinition({ botId, token }) {
   };
 }
 
-async function fetchBots() {
-  const payload = await apiGet("/api/bots");
-  const bots = Array.isArray(payload?.bots) ? payload.bots : [];
-  return bots
-    .filter((entry) => String(entry?.id ?? "").trim() !== "")
-    .sort((a, b) => String(a.id ?? "").localeCompare(String(b.id ?? "")));
+async function fetchBots(): Promise<BotState[]> {
+  const payload = await apiGet<BotListResponse>("/api/bots");
+  const bots = Array.isArray(payload.bots) ? payload.bots : [];
+  const normalized: BotState[] = [];
+  for (const entry of bots) {
+    if (!isRecord(entry)) {
+      continue;
+    }
+    const id = String(entry.id ?? "").trim();
+    if (!id) {
+      continue;
+    }
+    const provider = isRecord(entry.provider) ? entry.provider : null;
+    const options = provider && isRecord(provider.options) ? provider.options : undefined;
+    normalized.push({
+      id,
+      running: entry.running === true,
+      telegramRunning: entry.telegramRunning === true,
+      provider: options ? { options } : null,
+    });
+  }
+  return normalized.sort((a, b) => String(a.id ?? "").localeCompare(String(b.id ?? "")));
 }
 
-async function fetchBotById(botId) {
+async function fetchBotById(botId: string): Promise<BotState | null> {
   const bots = await fetchBots();
   return bots.find((entry) => String(entry?.id ?? "").trim() === botId) ?? null;
 }
 
-async function editMessageOrReply(ctx, text, options = {}) {
+async function editMessageOrReply(
+  ctx: HubOpsContext,
+  text: string,
+  options: ReplyOptions = {},
+): Promise<void> {
   try {
     await ctx.editMessageText(text, options);
   } catch (error) {
@@ -954,11 +1947,11 @@ async function editMessageOrReply(ctx, text, options = {}) {
   }
 }
 
-function getChatId(ctx) {
+function getChatId(ctx: HubOpsContext): string {
   return String(ctx.chat?.id ?? ctx.callbackQuery?.message?.chat?.id ?? "").trim();
 }
 
-function looksLikeCodexApiKey(value) {
+function looksLikeCodexApiKey(value: string): boolean {
   const raw = String(value ?? "").trim();
   if (!raw.startsWith("sk-")) {
     return false;
@@ -969,7 +1962,7 @@ function looksLikeCodexApiKey(value) {
   return /^[A-Za-z0-9._-]+$/.test(raw);
 }
 
-async function maybeDeleteIncomingMessage(ctx) {
+async function maybeDeleteIncomingMessage(ctx: HubOpsContext): Promise<void> {
   const chatId = ctx.chat?.id;
   const messageId = ctx.message?.message_id;
   if (!chatId || !messageId) {
@@ -983,7 +1976,7 @@ async function maybeDeleteIncomingMessage(ctx) {
   }
 }
 
-async function answerCallbackQuerySafe(ctx, text = "") {
+async function answerCallbackQuerySafe(ctx: HubOpsContext, text = ""): Promise<void> {
   try {
     if (text) {
       await ctx.answerCallbackQuery({ text });
@@ -995,7 +1988,7 @@ async function answerCallbackQuerySafe(ctx, text = "") {
   }
 }
 
-async function apiGet(endpoint) {
+async function apiGet<T = unknown>(endpoint: string): Promise<T> {
   const response = await fetch(`${getEngineBaseUrl()}${endpoint}`, {
     method: "GET",
     headers: {
@@ -1005,7 +1998,7 @@ async function apiGet(endpoint) {
   return parseJsonResponse(response);
 }
 
-async function apiPost(endpoint, body) {
+async function apiPost<T = unknown>(endpoint: string, body: unknown): Promise<T> {
   const response = await fetch(`${getEngineBaseUrl()}${endpoint}`, {
     method: "POST",
     headers: {
@@ -1017,21 +2010,24 @@ async function apiPost(endpoint, body) {
   return parseJsonResponse(response);
 }
 
-function getEngineBaseUrl() {
+function getEngineBaseUrl(): string {
   const value = String(process.env.HUB_ENGINE_BASE_URL ?? "http://127.0.0.1:8787").trim();
   return value.replace(/\/+$/, "") || "http://127.0.0.1:8787";
 }
 
-async function parseJsonResponse(response) {
+async function parseJsonResponse<T>(response: Response): Promise<T> {
   const payload = await response.json().catch(() => null);
   if (!response.ok) {
-    const detail = payload?.error ? `: ${payload.error}` : "";
+    const detail =
+      isRecord(payload) && typeof payload.error === "string" && payload.error.trim()
+        ? `: ${payload.error}`
+        : "";
     throw new Error(`HTTP ${response.status}${detail}`);
   }
-  return payload;
+  return payload as T;
 }
 
-async function verifyTelegramToken(token) {
+async function verifyTelegramToken(token: string): Promise<TelegramVerificationResult> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TELEGRAM_VERIFY_TIMEOUT_MS);
 
@@ -1045,18 +2041,23 @@ async function verifyTelegramToken(token) {
     });
 
     const payload = await response.json().catch(() => null);
-    if (!response.ok || payload?.ok !== true || !payload?.result) {
-      const reason = String(payload?.description ?? `HTTP ${response.status}`).trim();
+    const payloadRecord = isRecord(payload) ? payload : {};
+    const resultRecord = isRecord(payloadRecord.result) ? payloadRecord.result : null;
+    if (!response.ok || payloadRecord.ok !== true || !resultRecord) {
+      const reason = String(payloadRecord.description ?? `HTTP ${response.status}`).trim();
       return {
         ok: false,
         error: reason || "Telegram getMe failed.",
       };
     }
 
+    const rawId = resultRecord.id;
+    const numericId = typeof rawId === "number" ? rawId : Number(rawId);
+    const safeId = Number.isFinite(numericId) ? numericId : 0;
     return {
       ok: true,
-      id: payload.result.id,
-      username: String(payload.result.username ?? "").trim() || null,
+      id: safeId,
+      username: String(resultRecord.username ?? "").trim() || null,
     };
   } catch (error) {
     const reason = sanitizeError(error);
@@ -1076,7 +2077,126 @@ async function verifyTelegramToken(token) {
   }
 }
 
-function sanitizeError(error) {
+function startCodexLoginWatcher(flowKey: string): string {
+  const token = randomBytes(6).toString("hex");
+  codexLoginWatchers.set(flowKey, {
+    token,
+    startedAt: Date.now(),
+  });
+  return token;
+}
+
+function clearCodexLoginWatcher(flowKey: string): boolean {
+  return codexLoginWatchers.delete(flowKey);
+}
+
+function isCodexLoginWatcherActive(flowKey: string, watcherToken: string): boolean {
+  const watcher = codexLoginWatchers.get(flowKey);
+  return Boolean(watcher && watcher.token === watcherToken);
+}
+
+async function watchCodexLoginCompletion({
+  ctx,
+  runtime,
+  flowKey,
+  watcherToken,
+}: {
+  ctx: HubOpsContext;
+  runtime: HubRuntimeInfo | null | undefined;
+  flowKey: string;
+  watcherToken: string;
+}): Promise<void> {
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt <= CODEX_LOGIN_WATCH_TIMEOUT_MS) {
+    if (!isCodexLoginWatcherActive(flowKey, watcherToken)) {
+      return;
+    }
+
+    await sleep(CODEX_LOGIN_WATCH_POLL_MS);
+
+    let status: CodexStatusResponse | null = null;
+    try {
+      status = await apiGet<CodexStatusResponse>("/api/system/codex/status");
+    } catch {
+      continue;
+    }
+
+    const deviceAuth = isRecord(status?.deviceAuth) ? status.deviceAuth : {};
+    const state = String(deviceAuth.status ?? "idle")
+      .trim()
+      .toLowerCase();
+
+    if (state === "succeeded") {
+      const refreshMessage = await refreshHubProviderAfterCodexLogin(runtime);
+      if (!isCodexLoginWatcherActive(flowKey, watcherToken)) {
+        return;
+      }
+      clearCodexLoginWatcher(flowKey);
+      await ctx.reply(
+        [
+          "Codex account switched successfully.",
+          refreshMessage,
+          "New turns now use the new account quota.",
+        ].join("\n"),
+      );
+      return;
+    }
+
+    if (state === "failed" || state === "canceled") {
+      if (!isCodexLoginWatcherActive(flowKey, watcherToken)) {
+        return;
+      }
+      clearCodexLoginWatcher(flowKey);
+      const detail = String(deviceAuth.detail ?? "").trim();
+      await ctx.reply(
+        detail
+          ? `Codex login ${state}: ${detail}`
+          : `Codex login ${state}. Retry /codex_login if needed.`,
+      );
+      return;
+    }
+  }
+
+  if (!isCodexLoginWatcherActive(flowKey, watcherToken)) {
+    return;
+  }
+  clearCodexLoginWatcher(flowKey);
+  await ctx.reply(
+    "Codex login is still pending. Run /codex_status. Once succeeded, new turns use the new account quota.",
+  );
+}
+
+async function refreshHubProviderAfterCodexLogin(runtime?: HubRuntimeInfo | null): Promise<string> {
+  if (!runtime || typeof runtime.refreshProviderSession !== "function") {
+    return "Account updated. Hub refresh is not available on this runtime.";
+  }
+
+  try {
+    const result = await runtime.refreshProviderSession("codex account switched");
+    const payload = isRecord(result) ? result : {};
+    const channelsRestarted = payload.channelsRestarted === true;
+    return channelsRestarted
+      ? "Hub session refreshed automatically."
+      : "Hub provider refreshed automatically.";
+  } catch (error) {
+    return `Account updated, but hub refresh warning: ${sanitizeError(error)}`;
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isPolicyProfileId(value: string): value is PolicyProfileId {
+  return value === "safe" || value === "standard" || value === "semi_auto" || value === "full_auto";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object";
+}
+
+function sanitizeError(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error);
   return raw.split(/\r?\n/).slice(0, 6).join("\n");
 }
