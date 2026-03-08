@@ -93,3 +93,27 @@ test("setProviderOptions updates config for stopped workers without spawning one
   );
   assert.equal(supervisor.config.provider.options.sandboxMode, "danger-full-access");
 });
+
+test("refreshProviderSession proxies the refresh request to a live worker", async () => {
+  const supervisor = createSupervisor();
+  const calls = [];
+
+  supervisor.child = { connected: true };
+  supervisor.request = async (action, payload) => {
+    calls.push({ action, payload });
+    return {
+      running: true,
+      telegramRunning: true,
+    };
+  };
+
+  const status = await supervisor.refreshProviderSession("codex account switched");
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].action, "refreshProviderSession");
+  assert.deepEqual(calls[0].payload, {
+    reason: "codex account switched",
+  });
+  assert.equal(status.running, true);
+  assert.equal(status.telegramRunning, true);
+});

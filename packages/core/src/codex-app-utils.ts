@@ -68,9 +68,29 @@ export function normalizeApprovalDecision(value: unknown): ApprovalDecision {
 }
 
 export function normalizeTimeout(value: unknown, fallback: number): number {
-  const parsed = Number.parseInt(String(value ?? fallback), 10);
-  if (!Number.isFinite(parsed) || parsed < 1_000) {
+  const parsed = parseTimeoutValue(value);
+  if (parsed === null) {
     return fallback;
+  }
+  if (parsed === 0) {
+    return 0;
+  }
+  if (parsed < 1_000) {
+    return fallback;
+  }
+  return parsed;
+}
+
+export function parseTurnActivityTimeoutSetting(value: unknown, fallback: number): number {
+  const parsed = parseTimeoutValue(value);
+  if (parsed === null) {
+    return fallback;
+  }
+  if (parsed === 0) {
+    return 0;
+  }
+  if (parsed < 10_000) {
+    throw new Error("TURN_ACTIVITY_TIMEOUT_MS must be 0/disabled or an integer >= 10000.");
   }
   return parsed;
 }
@@ -80,6 +100,33 @@ export function normalizeCliPath(value: string): string {
     return value;
   }
   return String(value).replace(/\\/g, "/");
+}
+
+function parseTimeoutValue(value: unknown): number | null {
+  const raw = String(value ?? "").trim();
+  if (!raw) {
+    return null;
+  }
+
+  const keyword = raw.toLowerCase();
+  if (
+    keyword === "0" ||
+    keyword === "off" ||
+    keyword === "none" ||
+    keyword === "disable" ||
+    keyword === "disabled" ||
+    keyword === "infinite" ||
+    keyword === "infinity" ||
+    keyword === "unlimited"
+  ) {
+    return 0;
+  }
+
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed)) {
+    return null;
+  }
+  return parsed;
 }
 
 export function makeTurnKey(threadId: string, turnId: string): string {

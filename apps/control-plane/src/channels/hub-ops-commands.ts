@@ -160,6 +160,10 @@ type CodexStatusResponse = {
     code?: string;
     loginUrl?: string;
     detail?: string;
+    refreshedBots?: string[];
+    refreshFailures?: unknown[];
+    restartedBots?: string[];
+    restartFailures?: unknown[];
   };
 };
 
@@ -181,6 +185,8 @@ type CreateBotResponse = {
 
 type CodexSwitchApiKeyResponse = {
   detail?: string;
+  refreshedBots?: string[];
+  refreshFailures?: unknown[];
   restartedBots?: string[];
   restartFailures?: unknown[];
 };
@@ -671,23 +677,23 @@ async function handleCodexSwitchFlow({
     });
     codexSwitchFlows.delete(flowKey);
 
-    const restartedBots = Array.isArray(result?.restartedBots) ? result.restartedBots : [];
-    const restartFailures = Array.isArray(result?.restartFailures) ? result.restartFailures : [];
+    const refreshedBots = readRefreshedBotIds(result);
+    const refreshFailures = readRefreshFailures(result);
 
     const lines = ["Codex account switched successfully."];
     if (result?.detail) {
       lines.push(`status: ${String(result.detail)}`);
     }
 
-    if (restartedBots.length > 0) {
-      lines.push(`Agents restarted: ${restartedBots.join(", ")}`);
+    if (refreshedBots.length > 0) {
+      lines.push(`Agents refreshed: ${refreshedBots.join(", ")}`);
     } else {
-      lines.push("No running agents needed restart.");
+      lines.push("No running agents needed refresh.");
     }
 
-    if (restartFailures.length > 0) {
+    if (refreshFailures.length > 0) {
       lines.push(
-        `Restart warnings: ${restartFailures.length}. Use /health then /bots to verify state.`,
+        `Refresh warnings: ${refreshFailures.length}. Use /health then /bots to verify state.`,
       );
     }
 
@@ -2214,17 +2220,23 @@ async function watchCodexLoginCompletion({
 
     if (state === "succeeded") {
       const refreshMessage = await refreshHubProviderAfterCodexLogin(runtime);
+      const refreshedBots = readRefreshedBotIds(deviceAuth);
+      const refreshFailures = readRefreshFailures(deviceAuth);
       if (!isCodexLoginWatcherActive(flowKey, watcherToken)) {
         return;
       }
       clearCodexLoginWatcher(flowKey);
-      await ctx.reply(
-        [
-          "Codex account switched successfully.",
-          refreshMessage,
-          "New turns now use the new account quota.",
-        ].join("\n"),
-      );
+      const lines = ["Codex account switched successfully.", refreshMessage];
+      if (refreshedBots.length > 0) {
+        lines.push(`Agents refreshed: ${refreshedBots.join(", ")}`);
+      } else {
+        lines.push("No running agents needed refresh.");
+      }
+      if (refreshFailures.length > 0) {
+        lines.push(`Refresh warnings: ${refreshFailures.length}. Use /health then /bots.`);
+      }
+      lines.push("New turns now use the new account quota.");
+      await ctx.reply(lines.join("\n"));
       return;
     }
 
@@ -2275,6 +2287,28 @@ function sleep(ms: number): Promise<void> {
 
 function isPolicyProfileId(value: string): value is PolicyProfileId {
   return value === "safe" || value === "standard" || value === "semi_auto" || value === "full_auto";
+}
+
+function readRefreshedBotIds(payload: unknown): string[] {
+  const record = isRecord(payload) ? payload : {};
+  const raw =
+    Array.isArray(record.refreshedBots) && record.refreshedBots.length > 0
+      ? record.refreshedBots
+      : Array.isArray(record.restartedBots)
+        ? record.restartedBots
+        : [];
+  return raw.map((entry) => String(entry ?? "").trim()).filter(Boolean);
+}
+
+function readRefreshFailures(payload: unknown): unknown[] {
+  const record = isRecord(payload) ? payload : {};
+  if (Array.isArray(record.refreshFailures)) {
+    return record.refreshFailures;
+  }
+  if (Array.isArray(record.restartFailures)) {
+    return record.restartFailures;
+  }
+  return [];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

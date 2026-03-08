@@ -12,7 +12,7 @@ type PendingKernelRequest = {
 const rawBotConfig = String(process.env.AGENT_BOT_CONFIG_JSON ?? "").trim();
 const rawProviderDefaults = String(process.env.AGENT_PROVIDER_DEFAULTS_JSON ?? "").trim();
 const turnActivityTimeoutMs = Number.parseInt(
-  String(process.env.AGENT_TURN_ACTIVITY_TIMEOUT_MS ?? "3600000"),
+  String(process.env.AGENT_TURN_ACTIVITY_TIMEOUT_MS ?? "0"),
   10,
 );
 const maxMessages = Number.parseInt(String(process.env.AGENT_MAX_MESSAGES ?? "200"), 10);
@@ -157,6 +157,10 @@ async function handleWorkerRequest(message: UnknownRecord): Promise<void> {
     }
     case "setProviderOptions": {
       result = await runtime.setProviderOptions(payload);
+      break;
+    }
+    case "refreshProviderSession": {
+      result = await runtime.refreshProviderSession(String(payload.reason ?? ""));
       break;
     }
     case "setProjectRoot": {

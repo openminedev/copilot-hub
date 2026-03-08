@@ -238,6 +238,15 @@ export class AgentSupervisor {
     return this.getStatus();
   }
 
+  async refreshProviderSession(
+    reason = "manual provider session refresh",
+  ): Promise<SupervisorStatus> {
+    await this.ensureWorker();
+    const status = await this.request("refreshProviderSession", { reason });
+    this.#updateStatus(status);
+    return this.getStatus();
+  }
+
   async resetWebThread(): Promise<unknown> {
     await this.ensureWorker();
     return this.request("resetWebThread");

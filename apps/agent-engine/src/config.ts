@@ -6,6 +6,7 @@ import {
   assertWorkspaceAllowed,
   parseWorkspaceAllowedRoots,
 } from "@copilot-hub/core/workspace-policy";
+import { parseTurnActivityTimeoutSetting } from "@copilot-hub/core/codex-app-utils";
 import {
   getDefaultExternalWorkspaceBasePath,
   getKernelRootPath,
@@ -64,13 +65,10 @@ const codexHomeDir = resolveOptionalPath(process.env.CODEX_HOME_DIR);
 const codexSandbox = normalizeCodexSandbox(process.env.CODEX_SANDBOX ?? "danger-full-access");
 const codexApprovalPolicy = normalizeApprovalPolicy(process.env.CODEX_APPROVAL_POLICY ?? "never");
 
-const turnActivityTimeoutMs = Number.parseInt(
-  process.env.TURN_ACTIVITY_TIMEOUT_MS ?? "3600000",
-  10,
+const turnActivityTimeoutMs = parseTurnActivityTimeoutSetting(
+  process.env.TURN_ACTIVITY_TIMEOUT_MS ?? "0",
+  0,
 );
-if (!Number.isFinite(turnActivityTimeoutMs) || turnActivityTimeoutMs < 10000) {
-  throw new Error("TURN_ACTIVITY_TIMEOUT_MS must be an integer >= 10000.");
-}
 
 const maxMessages = Number.parseInt(process.env.MAX_THREAD_MESSAGES ?? "200", 10);
 if (!Number.isFinite(maxMessages) || maxMessages < 20) {

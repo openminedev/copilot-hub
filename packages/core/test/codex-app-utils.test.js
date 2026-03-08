@@ -6,6 +6,8 @@ import {
   normalizeApprovalPolicy,
   normalizeModel,
   normalizeSandboxMode,
+  normalizeTimeout,
+  parseTurnActivityTimeoutSetting,
   normalizeTurnInputItems,
   toRequestId,
   toRpcId,
@@ -71,4 +73,15 @@ test("annotateSpawnError adds actionable guidance for known spawn failures", () 
 
   const unknown = annotateSpawnError("boom", "codex");
   assert.match(unknown.message, /Unknown spawn error|boom/);
+});
+
+test("normalizeTimeout and parseTurnActivityTimeoutSetting support disabled mode", () => {
+  assert.equal(normalizeTimeout("disabled", 60_000), 0);
+  assert.equal(normalizeTimeout("0", 60_000), 0);
+  assert.equal(normalizeTimeout("15000", 60_000), 15_000);
+  assert.equal(normalizeTimeout("bad", 60_000), 60_000);
+
+  assert.equal(parseTurnActivityTimeoutSetting("off", 3_600_000), 0);
+  assert.equal(parseTurnActivityTimeoutSetting("20000", 3_600_000), 20_000);
+  assert.throws(() => parseTurnActivityTimeoutSetting("5000", 3_600_000));
 });

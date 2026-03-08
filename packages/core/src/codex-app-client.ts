@@ -713,6 +713,10 @@ export class CodexAppClient extends EventEmitter {
     if (waiter.timer) {
       clearTimeout(waiter.timer);
     }
+    if (!Number.isFinite(waiter.timeoutMs) || waiter.timeoutMs <= 0) {
+      waiter.timer = null;
+      return;
+    }
     waiter.timer = setTimeout(() => {
       this.turnWaiters.delete(turnKey);
       waiter.reject(

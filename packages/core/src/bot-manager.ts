@@ -208,6 +208,14 @@ export class BotManager {
     return supervisor.setProviderOptions(providerOptions);
   }
 
+  async refreshBotProviderSession(
+    botId: string,
+    reason = "manual provider session refresh",
+  ): Promise<SupervisorStatus> {
+    const supervisor = this.getBot(botId);
+    return supervisor.refreshProviderSession(reason);
+  }
+
   async reloadBotCapabilities(
     botId: string,
     nextCapabilities: unknown = null,

@@ -18,16 +18,17 @@ import { InstanceLock } from "@copilot-hub/core/instance-lock";
 import { KernelControlPlane } from "@copilot-hub/core/kernel-control-plane";
 import { CONTROL_ACTIONS } from "@copilot-hub/core/control-plane-actions";
 import { KernelSecretStore } from "@copilot-hub/core/secret-store";
+import { refreshRunningBotProviders } from "./codex-account-refresh.js";
 
 let activeWebPort = config.webPort;
 let runtimeWebPublicBaseUrl = config.webPublicBaseUrl;
 
-type RestartFailure = {
+type RefreshFailure = {
   botId: string;
   error: string;
 };
 
-type DeviceAuthStatus = "starting" | "pending" | "succeeded" | "failed" | "canceled";
+type DeviceAuthStatus = "starting" | "pending" | "applying" | "succeeded" | "failed" | "canceled";
 
 type DeviceAuthSession = {
   id: string;
@@ -39,8 +40,8 @@ type DeviceAuthSession = {
   logLines: string[];
   error: string;
   child: ReturnType<typeof spawn> | null;
-  restartedBots: string[];
-  restartFailures: RestartFailure[];
+  refreshedBots: string[];
+  refreshFailures: RefreshFailure[];
 };
 
 type RunCodexCommandResult = {
@@ -314,15 +315,19 @@ function buildApiApp({
         return;
       }
 
-      const restarted = await restartRunningBots();
+      const refreshed = await refreshRunningBotProviders({
+        botManager: requireBotManager(),
+      });
       res.json({
         ok: true,
         switched: true,
         configured: true,
         codexBin: status.codexBin,
         detail: status.detail,
-        restartedBots: restarted.restartedBotIds,
-        restartFailures: restarted.failures,
+        refreshedBots: refreshed.refreshedBotIds,
+        refreshFailures: refreshed.failures,
+        restartedBots: refreshed.refreshedBotIds,
+        restartFailures: refreshed.failures,
       });
     }),
   );
@@ -679,7 +684,7 @@ function parseDeleteModeFromRequest(body: unknown): "soft" | "purge_data" | "pur
 }
 
 function startCodexDeviceAuthSession(): DeviceAuthSession {
-  if (codexDeviceAuthSession && isDeviceAuthActive(codexDeviceAuthSession.status)) {
+  if (codexDeviceAuthSession && isDeviceAuthBusy(codexDeviceAuthSession.status)) {
     return codexDeviceAuthSession;
   }
 
@@ -694,8 +699,8 @@ function startCodexDeviceAuthSession(): DeviceAuthSession {
     logLines: [],
     error: "",
     child: null,
-    restartedBots: [],
-    restartFailures: [],
+    refreshedBots: [],
+    refreshFailures: [],
   };
 
   const child = spawn(codexBin, ["login", "--device-auth"], {
@@ -728,14 +733,19 @@ function startCodexDeviceAuthSession(): DeviceAuthSession {
     }
 
     if (code === 0) {
-      session.status = "succeeded";
-      void restartRunningBots()
-        .then((restarted) => {
-          session.restartedBots = restarted.restartedBotIds;
-          session.restartFailures = restarted.failures;
+      session.status = "applying";
+      void refreshRunningBotProviders({
+        botManager: requireBotManager(),
+      })
+        .then((refreshed) => {
+          session.refreshedBots = refreshed.refreshedBotIds;
+          session.refreshFailures = refreshed.failures;
+          session.status = "succeeded";
         })
         .catch((error) => {
-          session.restartFailures = [{ botId: "*", error: sanitizeError(error) }];
+          session.refreshFailures = [{ botId: "*", error: sanitizeError(error) }];
+          session.status = "failed";
+          session.error = sanitizeError(error);
         });
       return;
     }
@@ -750,7 +760,7 @@ function startCodexDeviceAuthSession(): DeviceAuthSession {
 }
 
 function cancelCodexDeviceAuthSession(): boolean {
-  if (!codexDeviceAuthSession || !isDeviceAuthActive(codexDeviceAuthSession.status)) {
+  if (!codexDeviceAuthSession || !isDeviceAuthCancelable(codexDeviceAuthSession.status)) {
     return false;
   }
 
@@ -771,8 +781,10 @@ function getCodexDeviceAuthSnapshot(): {
   loginUrl?: string;
   code?: string;
   detail?: string;
+  refreshedBots?: string[];
+  refreshFailures?: RefreshFailure[];
   restartedBots?: string[];
-  restartFailures?: RestartFailure[];
+  restartFailures?: RefreshFailure[];
 } {
   const session = codexDeviceAuthSession;
   if (!session) {
@@ -785,8 +797,10 @@ function getCodexDeviceAuthSnapshot(): {
     ...(session.loginUrl ? { loginUrl: session.loginUrl } : {}),
     ...(session.code ? { code: session.code } : {}),
     ...(session.error ? { detail: session.error } : {}),
-    restartedBots: session.restartedBots,
-    restartFailures: session.restartFailures,
+    refreshedBots: session.refreshedBots,
+    refreshFailures: session.refreshFailures,
+    restartedBots: session.refreshedBots,
+    restartFailures: session.refreshFailures,
   };
 }
 
@@ -877,7 +891,14 @@ function stripAnsi(value: unknown): string {
   return String(value ?? "").replace(ANSI_ESCAPE_PATTERN, "");
 }
 
-function isDeviceAuthActive(status: unknown): boolean {
+function isDeviceAuthBusy(status: unknown): boolean {
+  const value = String(status ?? "")
+    .trim()
+    .toLowerCase();
+  return value === "starting" || value === "pending" || value === "applying";
+}
+
+function isDeviceAuthCancelable(status: unknown): boolean {
   const value = String(status ?? "")
     .trim()
     .toLowerCase();
@@ -1059,43 +1080,4 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isErrnoException(error: unknown): error is NodeJS.ErrnoException {
   return isRecord(error);
-}
-
-async function restartRunningBots(): Promise<{
-  restartedBotIds: string[];
-  failures: RestartFailure[];
-}> {
-  const manager = requireBotManager();
-  const statuses = await manager.listBotsLive();
-  const runningBotIds: string[] = [];
-  for (const entry of statuses) {
-    if (!isRecord(entry) || entry.running !== true) {
-      continue;
-    }
-    const botId = String(entry.id ?? "").trim();
-    if (botId) {
-      runningBotIds.push(botId);
-    }
-  }
-
-  const restartedBotIds = [];
-  const failures = [];
-
-  for (const botId of runningBotIds) {
-    try {
-      await manager.stopBot(botId);
-      await manager.startBot(botId);
-      restartedBotIds.push(botId);
-    } catch (error) {
-      failures.push({
-        botId,
-        error: sanitizeError(error),
-      });
-    }
-  }
-
-  return {
-    restartedBotIds,
-    failures,
-  };
 }

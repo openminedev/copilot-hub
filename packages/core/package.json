@@ -70,6 +70,10 @@
       "types": "./dist/codex-app-client.d.ts",
       "import": "./dist/codex-app-client.js"
     },
+    "./codex-app-utils": {
+      "types": "./dist/codex-app-utils.d.ts",
+      "import": "./dist/codex-app-utils.js"
+    },
     "./codex-quota-display": {
       "types": "./dist/codex-quota-display.d.ts",
       "import": "./dist/codex-quota-display.js"
