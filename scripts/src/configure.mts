@@ -14,6 +14,7 @@ const engineExamplePath = path.join(repoRoot, "apps", "agent-engine", ".env.exam
 const controlPlaneEnvPath = path.join(repoRoot, "apps", "control-plane", ".env");
 const controlPlaneExamplePath = path.join(repoRoot, "apps", "control-plane", ".env.example");
 const TELEGRAM_TOKEN_PATTERN = /^\d{5,}:[A-Za-z0-9_-]{20,}$/;
+const DEFAULT_CONTROL_PLANE_TOKEN_ENV = "HUB_TELEGRAM_TOKEN";
 
 const args = new Set(process.argv.slice(2));
 const requiredOnly = args.has("--required-only");
@@ -33,9 +34,8 @@ async function main() {
     if (requiredOnly) {
       await configureRequiredTokens({ rl, controlPlaneLines });
     } else {
-      await configureAll({ rl, engineLines, controlPlaneLines });
+      await configureAll({ rl, controlPlaneLines });
       console.log("\nSaved:");
-      console.log(`- ${relativeFromRepo(engineEnvPath)}`);
       console.log(`- ${relativeFromRepo(controlPlaneEnvPath)}`);
       console.log("\nNext step:");
       console.log("1) npm run start");
@@ -53,7 +53,7 @@ async function configureRequiredTokens({ rl, controlPlaneLines }) {
 
   const controlPlaneTokenEnvName = nonEmpty(
     controlPlaneMap.HUB_TELEGRAM_TOKEN_ENV,
-    "HUB_TELEGRAM_TOKEN",
+    DEFAULT_CONTROL_PLANE_TOKEN_ENV,
   );
   setEnvValue(controlPlaneLines, "HUB_TELEGRAM_TOKEN_ENV", controlPlaneTokenEnvName);
 
@@ -72,55 +72,33 @@ async function configureRequiredTokens({ rl, controlPlaneLines }) {
   }
 
   console.log("Missing or invalid hub token. Please enter a valid Telegram bot token.");
-  const value = await askRequiredTelegramToken(
-    rl,
-    `Token value for ${controlPlaneTokenEnvName} (control-plane)`,
-  );
+  const value = await askRequiredTelegramToken(rl, "Control-plane Telegram token");
   setEnvValue(controlPlaneLines, controlPlaneTokenEnvName, value);
   console.log("Required token saved.");
 }
 
-async function configureAll({ rl, engineLines, controlPlaneLines }) {
-  const engineMap = parseEnvMap(engineLines);
+async function configureAll({ rl, controlPlaneLines }) {
   const controlPlaneMap = parseEnvMap(controlPlaneLines);
 
-  console.log("\nCopilot Hub token configuration\n");
+  console.log("\nCopilot Hub control-plane configuration\n");
 
   const controlPlaneTokenEnvDefault = nonEmpty(
     controlPlaneMap.HUB_TELEGRAM_TOKEN_ENV,
-    "HUB_TELEGRAM_TOKEN",
+    DEFAULT_CONTROL_PLANE_TOKEN_ENV,
   );
-  const controlPlaneTokenEnvName = await ask(
-    rl,
-    "control-plane token variable",
-    controlPlaneTokenEnvDefault,
-  );
-  setEnvValue(controlPlaneLines, "HUB_TELEGRAM_TOKEN_ENV", controlPlaneTokenEnvName);
-  const currentControlPlaneToken = parseEnvMap(controlPlaneLines)[controlPlaneTokenEnvName] ?? "";
-  const newControlPlaneToken = await ask(
-    rl,
-    `Token value for ${controlPlaneTokenEnvName} (control-plane, Enter to keep current)`,
-    "",
-  );
-  if (newControlPlaneToken) {
-    setEnvValue(controlPlaneLines, controlPlaneTokenEnvName, newControlPlaneToken);
-  } else if (!currentControlPlaneToken) {
-    console.log(`- No value set for ${controlPlaneTokenEnvName} yet.`);
-  }
+  setEnvValue(controlPlaneLines, "HUB_TELEGRAM_TOKEN_ENV", controlPlaneTokenEnvDefault);
+  const currentControlPlaneToken = String(
+    parseEnvMap(controlPlaneLines)[controlPlaneTokenEnvDefault] ?? "",
+  ).trim();
 
-  const configureAgentToken = await askYesNo(rl, "Configure TELEGRAM_TOKEN_AGENT_1 now?", true);
-  if (configureAgentToken) {
-    const currentAgentToken = engineMap.TELEGRAM_TOKEN_AGENT_1 ?? "";
-    const newAgentToken = await ask(
-      rl,
-      "Token value for TELEGRAM_TOKEN_AGENT_1 (agent-engine, Enter to keep current)",
-      "",
-    );
-    if (newAgentToken) {
-      setEnvValue(engineLines, "TELEGRAM_TOKEN_AGENT_1", newAgentToken);
-    } else if (!currentAgentToken) {
-      console.log("- No value set for TELEGRAM_TOKEN_AGENT_1 yet.");
-    }
+  const newControlPlaneToken = currentControlPlaneToken
+    ? await askTelegramToken(rl, "Control-plane Telegram token (press Enter to keep current)", true)
+    : await askRequiredTelegramToken(rl, "Control-plane Telegram token");
+
+  if (newControlPlaneToken) {
+    setEnvValue(controlPlaneLines, controlPlaneTokenEnvDefault, newControlPlaneToken);
+  } else {
+    console.log("- Control-plane token left unchanged.");
   }
 }
 
@@ -212,15 +190,6 @@ function escapeRegex(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-async function ask(rl, label, fallback) {
-  const value = await rl.question(`${label}${fallback ? ` [${fallback}]` : ""}: `);
-  const normalized = String(value ?? "").trim();
-  if (!normalized) {
-    return String(fallback ?? "").trim();
-  }
-  return normalized;
-}
-
 async function askRequired(rl, label) {
   while (true) {
     const value = await rl.question(`${label}: `);
@@ -242,22 +211,18 @@ async function askRequiredTelegramToken(rl, label) {
   }
 }
 
-async function askYesNo(rl, label, defaultYes) {
-  const suffix = defaultYes ? "[Y/n]" : "[y/N]";
-  const answer = await rl.question(`${label} ${suffix}: `);
-  const value = String(answer ?? "")
-    .trim()
-    .toLowerCase();
-  if (!value) {
-    return defaultYes;
+async function askTelegramToken(rl, label, allowEmpty) {
+  while (true) {
+    const value = await rl.question(`${label}: `);
+    const normalized = String(value ?? "").trim();
+    if (!normalized && allowEmpty) {
+      return "";
+    }
+    if (isUsableTelegramToken(normalized)) {
+      return normalized;
+    }
+    console.log("Token format looks invalid. Expected format like: 123456789:AA...");
   }
-  if (value === "y" || value === "yes") {
-    return true;
-  }
-  if (value === "n" || value === "no") {
-    return false;
-  }
-  return defaultYes;
 }
 
 function relativeFromRepo(filePath) {
