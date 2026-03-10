@@ -157,10 +157,21 @@ export function requiresShellWrappedSpawn(
   return platform === "win32" && /\.(cmd|bat)$/i.test(String(command ?? "").trim());
 }
 
+export function requiresNodeScriptSpawn(command: unknown): boolean {
+  return /\.(cjs|mjs|js)$/i.test(String(command ?? "").trim());
+}
+
 export function buildShellWrappedCommandLine(command: string, args: readonly string[]): string {
   return [quoteWindowsShellValue(command), ...args.map((arg) => quoteWindowsShellValue(arg))].join(
     " ",
   );
+}
+
+export function buildNodeScriptSpawnArgs(
+  command: string,
+  args: readonly string[],
+): readonly string[] {
+  return [String(command ?? "").trim(), ...args];
 }
 
 function parseTimeoutValue(value: unknown): number | null {

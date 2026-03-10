@@ -11,6 +11,7 @@ import {
 import {
   annotateSpawnError,
   asRecord,
+  buildNodeScriptSpawnArgs,
   buildShellWrappedCommandLine,
   createApprovalId,
   isRecord,
@@ -24,6 +25,7 @@ import {
   normalizeSandboxMode,
   normalizeTimeout,
   normalizeTurnInputItems,
+  requiresNodeScriptSpawn,
   requiresShellWrappedSpawn,
   sanitizeError,
   toRequestId,
@@ -557,17 +559,23 @@ export class CodexAppClient extends EventEmitter {
 
     const args = ["-C", normalizeCliPath(this.cwd), "app-server"];
     const env = this.#buildEnvironment();
-    const child = requiresShellWrappedSpawn(this.codexBin)
-      ? spawn(buildShellWrappedCommandLine(this.codexBin, args), {
-          windowsHide: true,
-          shell: true,
-          env,
-        })
-      : spawn(this.codexBin, args, {
+    const child = requiresNodeScriptSpawn(this.codexBin)
+      ? spawn(process.execPath, buildNodeScriptSpawnArgs(this.codexBin, args), {
           windowsHide: true,
           shell: false,
           env,
-        });
+        })
+      : requiresShellWrappedSpawn(this.codexBin)
+        ? spawn(buildShellWrappedCommandLine(this.codexBin, args), {
+            windowsHide: true,
+            shell: true,
+            env,
+          })
+        : spawn(this.codexBin, args, {
+            windowsHide: true,
+            shell: false,
+            env,
+          });
 
     this.child = child;
     this.started = true;

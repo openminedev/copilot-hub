@@ -13,7 +13,9 @@ import express, {
 import { BotManager } from "@copilot-hub/core/bot-manager";
 import { CodexAppClient } from "@copilot-hub/core/codex-app-client";
 import {
+  buildNodeScriptSpawnArgs,
   buildShellWrappedCommandLine,
+  requiresNodeScriptSpawn,
   requiresShellWrappedSpawn,
 } from "@copilot-hub/core/codex-app-utils";
 import { loadBotRegistry } from "@copilot-hub/core/bot-registry";
@@ -737,21 +739,29 @@ function startCodexDeviceAuthSession(): DeviceAuthSession {
     refreshFailures: [],
   };
 
-  const child = requiresShellWrappedSpawn(codexBin)
-    ? spawn(buildShellWrappedCommandLine(codexBin, ["login", "--device-auth"]), {
-        cwd: config.kernelRootPath,
-        shell: true,
-        stdio: ["ignore", "pipe", "pipe"],
-        windowsHide: true,
-        env: process.env,
-      })
-    : spawn(codexBin, ["login", "--device-auth"], {
+  const child = requiresNodeScriptSpawn(codexBin)
+    ? spawn(process.execPath, buildNodeScriptSpawnArgs(codexBin, ["login", "--device-auth"]), {
         cwd: config.kernelRootPath,
         shell: false,
         stdio: ["ignore", "pipe", "pipe"],
         windowsHide: true,
         env: process.env,
-      });
+      })
+    : requiresShellWrappedSpawn(codexBin)
+      ? spawn(buildShellWrappedCommandLine(codexBin, ["login", "--device-auth"]), {
+          cwd: config.kernelRootPath,
+          shell: true,
+          stdio: ["ignore", "pipe", "pipe"],
+          windowsHide: true,
+          env: process.env,
+        })
+      : spawn(codexBin, ["login", "--device-auth"], {
+          cwd: config.kernelRootPath,
+          shell: false,
+          stdio: ["ignore", "pipe", "pipe"],
+          windowsHide: true,
+          env: process.env,
+        });
   session.child = child;
   codexDeviceAuthSession = session;
 
@@ -1087,17 +1097,8 @@ function runCodexCommand(
   { inputText = "" }: { inputText?: string } = {},
 ): RunCodexCommandResult {
   const codexBin = String(config.codexBin ?? "codex").trim() || "codex";
-  const result = requiresShellWrappedSpawn(codexBin)
-    ? spawnSync(buildShellWrappedCommandLine(codexBin, args), {
-        cwd: config.kernelRootPath,
-        shell: true,
-        stdio: ["pipe", "pipe", "pipe"],
-        windowsHide: true,
-        encoding: "utf8",
-        input: inputText,
-        env: process.env,
-      })
-    : spawnSync(codexBin, args, {
+  const result = requiresNodeScriptSpawn(codexBin)
+    ? spawnSync(process.execPath, buildNodeScriptSpawnArgs(codexBin, args), {
         cwd: config.kernelRootPath,
         shell: false,
         stdio: ["pipe", "pipe", "pipe"],
@@ -1105,7 +1106,26 @@ function runCodexCommand(
         encoding: "utf8",
         input: inputText,
         env: process.env,
-      });
+      })
+    : requiresShellWrappedSpawn(codexBin)
+      ? spawnSync(buildShellWrappedCommandLine(codexBin, args), {
+          cwd: config.kernelRootPath,
+          shell: true,
+          stdio: ["pipe", "pipe", "pipe"],
+          windowsHide: true,
+          encoding: "utf8",
+          input: inputText,
+          env: process.env,
+        })
+      : spawnSync(codexBin, args, {
+          cwd: config.kernelRootPath,
+          shell: false,
+          stdio: ["pipe", "pipe", "pipe"],
+          windowsHide: true,
+          encoding: "utf8",
+          input: inputText,
+          env: process.env,
+        });
 
   if (result.error) {
     return {

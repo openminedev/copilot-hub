@@ -273,9 +273,11 @@ function findWindowsNpmGlobalCodexBin(): string | null {
     return null;
   }
 
+  const packageRoots: string[] = [];
   const candidates: string[] = [];
   const appData = String(process.env.APPDATA ?? "").trim();
   if (appData) {
+    packageRoots.push(path.join(appData, "npm", "node_modules", "@openai", "codex"));
     candidates.push(path.join(appData, "npm", "codex.cmd"));
     candidates.push(path.join(appData, "npm", "codex.exe"));
     candidates.push(path.join(appData, "npm", "codex"));
@@ -283,9 +285,17 @@ function findWindowsNpmGlobalCodexBin(): string | null {
 
   const npmPrefix = readNpmPrefix();
   if (npmPrefix) {
+    packageRoots.push(path.join(npmPrefix, "node_modules", "@openai", "codex"));
     candidates.push(path.join(npmPrefix, "codex.cmd"));
     candidates.push(path.join(npmPrefix, "codex.exe"));
     candidates.push(path.join(npmPrefix, "codex"));
+  }
+
+  for (const packageRoot of packageRoots) {
+    const entrypoint = path.join(packageRoot, "bin", "codex.js");
+    if (fs.existsSync(entrypoint)) {
+      return entrypoint;
+    }
   }
 
   for (const candidate of candidates) {

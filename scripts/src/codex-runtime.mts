@@ -316,9 +316,11 @@ function findWindowsNpmGlobalCodexBin(env: NodeJS.ProcessEnv, repoRoot: string):
     return "";
   }
 
+  const packageRoots: string[] = [];
   const candidates: string[] = [];
   const appData = nonEmpty(env.APPDATA);
   if (appData) {
+    packageRoots.push(path.join(appData, "npm", "node_modules", "@openai", "codex"));
     candidates.push(path.join(appData, "npm", "codex.cmd"));
     candidates.push(path.join(appData, "npm", "codex.exe"));
     candidates.push(path.join(appData, "npm", "codex"));
@@ -326,9 +328,17 @@ function findWindowsNpmGlobalCodexBin(env: NodeJS.ProcessEnv, repoRoot: string):
 
   const npmPrefix = readNpmPrefix(repoRoot);
   if (npmPrefix) {
+    packageRoots.push(path.join(npmPrefix, "node_modules", "@openai", "codex"));
     candidates.push(path.join(npmPrefix, "codex.cmd"));
     candidates.push(path.join(npmPrefix, "codex.exe"));
     candidates.push(path.join(npmPrefix, "codex"));
+  }
+
+  for (const packageRoot of dedupe(packageRoots)) {
+    const entrypoint = path.join(packageRoot, "bin", "codex.js");
+    if (fs.existsSync(entrypoint)) {
+      return entrypoint;
+    }
   }
 
   for (const candidate of dedupe(candidates)) {
@@ -385,6 +395,15 @@ function runCodex({
 }
 
 function spawnCodex(codexBin: string, args: string[], repoRoot: string) {
+  if (/\.(cjs|mjs|js)$/i.test(codexBin)) {
+    return spawnSync(process.execPath, [codexBin, ...args], {
+      cwd: repoRoot,
+      stdio: ["ignore", "pipe", "pipe"],
+      shell: false,
+      encoding: "utf8",
+    });
+  }
+
   if (process.platform === "win32" && /\.(cmd|bat)$/i.test(codexBin)) {
     const commandLine = [
       quoteWindowsShellValue(codexBin),
