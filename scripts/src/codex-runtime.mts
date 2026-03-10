@@ -82,13 +82,15 @@ export function resolveCodexBinForStart({
 export function resolveCompatibleInstalledCodexBin({
   repoRoot,
   env = process.env,
+  platform = process.platform,
 }: {
   repoRoot: string;
   env?: NodeJS.ProcessEnv;
+  platform?: NodeJS.Platform;
 }): string {
   const matches: Array<{ candidate: string; version: string; priority: number }> = [];
 
-  for (const candidate of listCodexBinCandidates(env, repoRoot)) {
+  for (const candidate of listCodexBinCandidates(env, repoRoot, platform)) {
     const probe = probeCodexVersion({
       codexBin: candidate,
       repoRoot,
@@ -100,7 +102,7 @@ export function resolveCompatibleInstalledCodexBin({
     matches.push({
       candidate,
       version: probe.version,
-      priority: getCodexCandidatePriority(candidate, env, repoRoot),
+      priority: getCodexCandidatePriority(candidate, env, repoRoot, platform),
     });
   }
 
@@ -276,8 +278,9 @@ export function normalizeConfiguredCodexBin({
   }
 
   if (path.win32.isAbsolute(normalizedValue)) {
-    const wrapperDir = path.win32.dirname(normalizedValue);
-    const entrypoint = path.win32.join(
+    const pathModule = selectPathModule(normalizedValue);
+    const wrapperDir = pathModule.dirname(normalizedValue);
+    const entrypoint = pathModule.join(
       wrapperDir,
       "node_modules",
       "@openai",
@@ -290,7 +293,7 @@ export function normalizeConfiguredCodexBin({
     }
   }
 
-  return findWindowsNpmGlobalCodexBin(env, repoRoot) || normalizedValue;
+  return findWindowsNpmGlobalCodexBin(env, repoRoot, platform) || normalizedValue;
 }
 
 function findDetectedCodexBin(env: NodeJS.ProcessEnv, repoRoot: string): string {
@@ -298,23 +301,34 @@ function findDetectedCodexBin(env: NodeJS.ProcessEnv, repoRoot: string): string 
     return "";
   }
 
-  return findWindowsNpmGlobalCodexBin(env, repoRoot) || findVscodeCodexExe(env) || "";
+  return (
+    findWindowsNpmGlobalCodexBin(env, repoRoot, process.platform) || findVscodeCodexExe(env) || ""
+  );
 }
 
-function listCodexBinCandidates(env: NodeJS.ProcessEnv, repoRoot: string): string[] {
-  return dedupe(["codex", findWindowsNpmGlobalCodexBin(env, repoRoot), findVscodeCodexExe(env)]);
+function listCodexBinCandidates(
+  env: NodeJS.ProcessEnv,
+  repoRoot: string,
+  platform: NodeJS.Platform,
+): string[] {
+  return dedupe([
+    "codex",
+    findWindowsNpmGlobalCodexBin(env, repoRoot, platform),
+    findVscodeCodexExe(env),
+  ]);
 }
 
 function getCodexCandidatePriority(
   candidate: string,
   env: NodeJS.ProcessEnv,
   repoRoot: string,
+  platform: NodeJS.Platform,
 ): number {
   if (candidate === "codex") {
     return 0;
   }
 
-  const npmGlobal = findWindowsNpmGlobalCodexBin(env, repoRoot);
+  const npmGlobal = findWindowsNpmGlobalCodexBin(env, repoRoot, platform);
   if (npmGlobal && candidate === npmGlobal) {
     return 1;
   }
@@ -356,8 +370,12 @@ function findVscodeCodexExe(env: NodeJS.ProcessEnv): string {
   return "";
 }
 
-function findWindowsNpmGlobalCodexBin(env: NodeJS.ProcessEnv, repoRoot: string): string {
-  if (process.platform !== "win32") {
+function findWindowsNpmGlobalCodexBin(
+  env: NodeJS.ProcessEnv,
+  repoRoot: string,
+  platform: NodeJS.Platform,
+): string {
+  if (platform !== "win32") {
     return "";
   }
 
@@ -393,6 +411,14 @@ function findWindowsNpmGlobalCodexBin(env: NodeJS.ProcessEnv, repoRoot: string):
   }
 
   return "";
+}
+
+function selectPathModule(filePath: string): typeof path.posix | typeof path.win32 {
+  const normalized = String(filePath ?? "").trim();
+  if (/^[A-Za-z]:[\\/]/.test(normalized) || normalized.includes("\\")) {
+    return path.win32;
+  }
+  return path.posix;
 }
 
 function readNpmPrefix(repoRoot: string): string {
