@@ -6,10 +6,13 @@ import path from "node:path";
 import process from "node:process";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { initializeCopilotHubLayout, resolveCopilotHubLayout } from "./install-layout.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const repoRoot = path.resolve(__dirname, "..", "..");
+const layout = resolveCopilotHubLayout({ repoRoot });
+initializeCopilotHubLayout({ repoRoot, layout });
 const nodeBin = process.execPath;
 const daemonScriptPath = path.join(repoRoot, "scripts", "dist", "daemon.mjs");
 
@@ -358,7 +361,7 @@ function installMacosService() {
   ensureCommandAvailable("launchctl", ["help"], "launchctl is not available.");
   const plistPath = getMacosPlistPath();
   fs.mkdirSync(path.dirname(plistPath), { recursive: true });
-  fs.mkdirSync(path.join(repoRoot, "logs"), { recursive: true });
+  fs.mkdirSync(layout.logsDir, { recursive: true });
   fs.writeFileSync(plistPath, buildMacosPlist(), "utf8");
 
   stopMacosService({ allowFailure: true });
@@ -436,7 +439,7 @@ function buildLinuxUnitContent() {
     "",
     "[Service]",
     "Type=simple",
-    `WorkingDirectory=${repoRoot}`,
+    `WorkingDirectory=${layout.runtimeDir}`,
     `ExecStart="${nodeBin}" "${daemonScriptPath}" run`,
     `ExecStop="${nodeBin}" "${daemonScriptPath}" stop`,
     "Restart=always",
@@ -450,13 +453,13 @@ function buildLinuxUnitContent() {
 }
 
 function buildMacosPlist() {
-  const stdoutPath = path.join(repoRoot, "logs", "service-launchd.log");
-  const stderrPath = path.join(repoRoot, "logs", "service-launchd.error.log");
+  const stdoutPath = path.join(layout.logsDir, "service-launchd.log");
+  const stderrPath = path.join(layout.logsDir, "service-launchd.error.log");
   const values = {
     label: escapeXml(MACOS_LABEL),
     node: escapeXml(nodeBin),
     script: escapeXml(daemonScriptPath),
-    cwd: escapeXml(repoRoot),
+    cwd: escapeXml(layout.runtimeDir),
     stdoutPath: escapeXml(stdoutPath),
     stderrPath: escapeXml(stderrPath),
   };
@@ -529,7 +532,7 @@ function runDaemon(actionValue, { allowFailure = false } = {}) {
 
 function runChecked(command, args, { stdio = "pipe", allowFailure = false } = {}) {
   const result = spawnSync(command, args, {
-    cwd: repoRoot,
+    cwd: layout.runtimeDir,
     shell: false,
     stdio,
     windowsHide: true,

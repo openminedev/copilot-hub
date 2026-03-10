@@ -6,6 +6,7 @@ import { spawnSync } from "node:child_process";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { codexInstallPackageSpec } from "./codex-version.mjs";
+import { initializeCopilotHubLayout, resolveCopilotHubLayout } from "./install-layout.mjs";
 import {
   buildCodexCompatibilityError,
   buildCodexCompatibilityNotice,
@@ -17,12 +18,13 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const repoRoot = path.resolve(__dirname, "..", "..");
+const layout = resolveCopilotHubLayout({ repoRoot });
 const packageJsonPath = path.join(repoRoot, "package.json");
-const runtimeDir = path.join(repoRoot, ".copilot-hub");
-const servicePromptStatePath = path.join(runtimeDir, "service-onboarding.json");
+const runtimeDir = layout.runtimeDir;
+const servicePromptStatePath = layout.servicePromptStatePath;
 const nodeBin = process.execPath;
-const agentEngineEnvPath = path.join(repoRoot, "apps", "agent-engine", ".env");
-const controlPlaneEnvPath = path.join(repoRoot, "apps", "control-plane", ".env");
+const agentEngineEnvPath = layout.agentEngineEnvPath;
+const controlPlaneEnvPath = layout.controlPlaneEnvPath;
 const codexInstallCommand = `npm install -g ${codexInstallPackageSpec}`;
 const packageVersion = readPackageVersion();
 
@@ -49,6 +51,8 @@ async function main() {
     printUsage();
     return;
   }
+
+  initializeCopilotHubLayout({ repoRoot, layout });
 
   switch (action) {
     case "start": {
@@ -112,18 +116,6 @@ async function main() {
         });
       }
       runNode(["scripts/dist/service.mjs", ...rawArgs.slice(1)]);
-      return;
-    }
-    case "_update_resume": {
-      await resumeAfterUpdate({
-        serviceInstalled: rawArgs.includes("--service-installed"),
-        runningBeforeUpdate: rawArgs.includes("--resume-running"),
-      });
-      return;
-    }
-    case "update":
-    case "upgrade": {
-      await runSelfUpdate();
       return;
     }
     default: {
@@ -279,86 +271,6 @@ async function maybeOfferServiceInstall() {
   writeServicePromptState("accepted");
 }
 
-async function runSelfUpdate() {
-  const serviceInstalled = isServiceAlreadyInstalled();
-  const runningBeforeUpdate = serviceInstalled ? isDaemonRunning() : hasRunningSupervisorWorkers();
-
-  if (serviceInstalled) {
-    const stopService = runNodeCapture(["scripts/dist/service.mjs", "stop"], "inherit");
-    if (!stopService.ok) {
-      console.log("Service stop reported an error. Continuing update attempt.");
-    }
-  } else {
-    const stopLocal = runNodeCapture(["scripts/dist/supervisor.mjs", "down"], "inherit");
-    if (!stopLocal.ok) {
-      console.log("Local stop reported an error. Continuing update attempt.");
-    }
-  }
-
-  const install = runNpm(["install", "-g", "copilot-hub@latest"], "inherit");
-  if (!install.ok) {
-    const detail =
-      firstLine(install.errorMessage) || firstLine(install.stderr) || firstLine(install.stdout);
-    const normalizedDetail = detail.toLowerCase();
-    if (normalizedDetail.includes("ebusy") || normalizedDetail.includes("resource busy")) {
-      throw new Error(
-        [
-          "Update failed because files are locked by another process (EBUSY).",
-          "Close other terminals using copilot-hub, then retry 'copilot-hub update'.",
-        ].join("\n"),
-      );
-    }
-    throw new Error(`Update failed: ${detail || "Unknown npm error."}`);
-  }
-
-  console.log("copilot-hub updated to latest.");
-  const resume = runNodeCapture(
-    [
-      "scripts/dist/cli.mjs",
-      "_update_resume",
-      ...(serviceInstalled ? ["--service-installed"] : ["--local-mode"]),
-      ...(runningBeforeUpdate ? ["--resume-running"] : ["--stopped"]),
-    ],
-    "inherit",
-  );
-  if (!resume.ok) {
-    console.log(
-      "Update completed, but post-update Codex validation or restart failed. Run 'copilot-hub start' manually.",
-    );
-  }
-}
-
-async function resumeAfterUpdate({
-  serviceInstalled,
-  runningBeforeUpdate,
-}: {
-  serviceInstalled: boolean;
-  runningBeforeUpdate: boolean;
-}) {
-  await ensureCompatibleCodexBinary({
-    autoInstall: true,
-    purpose: "update",
-  });
-
-  if (!runningBeforeUpdate) {
-    console.log("Services remain stopped. Run 'copilot-hub start' when ready.");
-    return;
-  }
-
-  if (serviceInstalled) {
-    const startService = runNodeCapture(["scripts/dist/service.mjs", "start"], "inherit");
-    if (!startService.ok) {
-      console.log("Update completed, but service start failed. Run 'copilot-hub start' manually.");
-    }
-    return;
-  }
-
-  const startLocal = runNodeCapture(["scripts/dist/supervisor.mjs", "up"], "inherit");
-  if (!startLocal.ok) {
-    console.log("Update completed, but local start failed. Run 'copilot-hub start' manually.");
-  }
-}
-
 function isServiceSupportedOnCurrentPlatform() {
   return (
     process.platform === "win32" || process.platform === "linux" || process.platform === "darwin"
@@ -375,18 +287,6 @@ function isServiceAlreadyInstalled() {
     return false;
   }
   return status.ok;
-}
-
-function isDaemonRunning() {
-  const status = runNodeCapture(["scripts/dist/daemon.mjs", "status"], "pipe");
-  const output = String(status.combinedOutput ?? "").toLowerCase();
-  return output.includes("=== daemon ===") && output.includes("running: yes");
-}
-
-function hasRunningSupervisorWorkers() {
-  const status = runNodeCapture(["scripts/dist/supervisor.mjs", "status"], "pipe");
-  const output = String(status.combinedOutput ?? "").toLowerCase();
-  return output.includes("running: yes");
 }
 
 function readServicePromptState() {
@@ -429,7 +329,7 @@ async function ensureCompatibleCodexBinary({
   purpose,
 }: {
   autoInstall: boolean;
-  purpose: "start" | "restart" | "service" | "update";
+  purpose: "start" | "restart" | "service";
 }): Promise<string> {
   const resolved = resolveCodexBinForStart({
     repoRoot,
@@ -501,11 +401,7 @@ async function ensureCompatibleCodexBinary({
   }
 
   if (!shouldInstall) {
-    throw new Error(
-      purpose === "update"
-        ? "Compatible Codex CLI is required before restarting services."
-        : "Compatible Codex CLI is required before starting services.",
-    );
+    throw new Error("Compatible Codex CLI is required before starting services.");
   }
 
   const install = runNpm(["install", "-g", codexInstallPackageSpec], "inherit");
@@ -697,7 +593,6 @@ function printUsage() {
   console.log(
     [
       "Usage: node scripts/dist/cli.mjs <start|stop|restart|status|logs|configure|service|version|help>",
-      "  node scripts/dist/cli.mjs <update|upgrade>",
       "Service management:",
       "  node scripts/dist/cli.mjs service <install|uninstall|status|start|stop|help>",
     ].join("\n"),

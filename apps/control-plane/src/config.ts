@@ -4,6 +4,11 @@ import { spawnSync } from "node:child_process";
 import dotenv from "dotenv";
 import { parseTurnActivityTimeoutSetting } from "@copilot-hub/core/codex-app-utils";
 import {
+  resolveConfigBaseDir,
+  resolveOptionalPathFromBase,
+  resolvePathFromBase,
+} from "@copilot-hub/core/config-paths";
+import {
   createWorkspaceBoundaryPolicy,
   assertWorkspaceAllowed,
   parseWorkspaceAllowedRoots,
@@ -14,7 +19,7 @@ import {
   getKernelRootPath,
 } from "@copilot-hub/core/workspace-paths";
 
-dotenv.config();
+const envBaseDir = loadEnvironment();
 
 type ThreadMode = "single" | "per_chat";
 type CodexSandbox = "read-only" | "workspace-write" | "danger-full-access";
@@ -27,12 +32,15 @@ const defaultWorkspaceRoot = resolveWorkspaceRoot(
   configuredDefaultWorkspaceRoot || getDefaultExternalWorkspaceBasePath(kernelRootPath),
 );
 const configuredProjectsBaseDir = String(process.env.PROJECTS_BASE_DIR ?? "").trim();
-const projectsBaseDir = path.resolve(configuredProjectsBaseDir || defaultWorkspaceRoot);
+const projectsBaseDir = resolvePathFromBase(
+  configuredProjectsBaseDir || defaultWorkspaceRoot,
+  envBaseDir,
+);
 const workspaceStrictMode = parseBoolean(process.env.WORKSPACE_STRICT_MODE ?? "true");
 const workspaceAllowedRoots = parseWorkspaceAllowedRoots(
   process.env.WORKSPACE_ALLOWED_ROOTS ?? "",
   {
-    cwd: process.cwd(),
+    cwd: envBaseDir,
   },
 );
 const workspacePolicy = createWorkspaceBoundaryPolicy({
@@ -48,12 +56,17 @@ assertWorkspaceAllowed({
   label: "DEFAULT_WORKSPACE_ROOT",
 });
 
-const dataDir = path.resolve(process.env.BOT_DATA_DIR ?? path.join(process.cwd(), "data"));
-const botRegistryFilePath = path.resolve(
-  process.env.BOT_REGISTRY_FILE ?? path.join(dataDir, "bot-registry.json"),
+const dataDir = resolvePathFromBase(
+  process.env.BOT_DATA_DIR ?? path.join(envBaseDir, "data"),
+  envBaseDir,
 );
-const secretStoreFilePath = path.resolve(
+const botRegistryFilePath = resolvePathFromBase(
+  process.env.BOT_REGISTRY_FILE ?? path.join(dataDir, "bot-registry.json"),
+  envBaseDir,
+);
+const secretStoreFilePath = resolvePathFromBase(
   process.env.SECRET_STORE_FILE ?? path.join(dataDir, "secrets.json"),
+  envBaseDir,
 );
 const adminBotId = normalizeAdminBotId(process.env.ADMIN_BOT_ID ?? "admin_agent");
 const adminTelegramTokenEnvName = normalizeAdminTokenEnv(
@@ -61,14 +74,19 @@ const adminTelegramTokenEnvName = normalizeAdminTokenEnv(
 );
 const adminTelegramToken = String(process.env[adminTelegramTokenEnvName] ?? "").trim();
 const instanceLockEnabled = parseBoolean(process.env.INSTANCE_LOCK_ENABLED ?? "true");
-const instanceLockFilePath = path.resolve(
+const instanceLockFilePath = resolvePathFromBase(
   process.env.INSTANCE_LOCK_FILE ?? path.join(dataDir, "runtime.lock"),
+  envBaseDir,
 );
 
 const bootstrapTelegramToken = String(process.env.TELEGRAM_BOT_TOKEN ?? "").trim();
 const defaultProviderKind = normalizeProviderKind(process.env.DEFAULT_PROVIDER_KIND ?? "codex");
 const codexBin = resolveCodexBin(process.env.CODEX_BIN);
-const codexHomeDir = resolveOptionalPath(process.env.CODEX_HOME_DIR);
+const codexHomeDir = resolveOptionalPathFromBase(process.env.CODEX_HOME_DIR, envBaseDir);
+if (codexHomeDir) {
+  process.env.CODEX_HOME_DIR = codexHomeDir;
+  process.env.CODEX_HOME = codexHomeDir;
+}
 const codexSandbox = normalizeCodexSandbox(process.env.CODEX_SANDBOX ?? "danger-full-access");
 const codexApprovalPolicy = normalizeApprovalPolicy(process.env.CODEX_APPROVAL_POLICY ?? "never");
 
@@ -137,6 +155,7 @@ const defaultAllowedChatIds = new Set(
 fs.mkdirSync(dataDir, { recursive: true });
 
 export const config = {
+  envBaseDir,
   defaultProviderKind,
   providerDefaults: {
     defaultKind: defaultProviderKind,
@@ -179,6 +198,24 @@ export const config = {
   defaultSharedThreadId,
   defaultAllowedChatIds,
 };
+
+function loadEnvironment(): string {
+  const configuredEnvPath = String(process.env.COPILOT_HUB_ENV_PATH ?? "").trim();
+  const resolvedEnvPath = configuredEnvPath ? path.resolve(configuredEnvPath) : "";
+  const baseDir = resolveConfigBaseDir({
+    configuredBaseDir: process.env.COPILOT_HUB_ENV_BASE_DIR,
+    configuredEnvPath: resolvedEnvPath,
+    cwd: process.cwd(),
+  });
+  if (configuredEnvPath) {
+    process.env.COPILOT_HUB_ENV_PATH = resolvedEnvPath;
+    dotenv.config({ path: resolvedEnvPath });
+  } else {
+    dotenv.config();
+  }
+  process.env.COPILOT_HUB_ENV_BASE_DIR = baseDir;
+  return baseDir;
+}
 
 function resolveCodexBin(rawValue: string | undefined): string {
   const value = String(rawValue ?? "").trim();
@@ -278,7 +315,7 @@ function spawnNpm(args: string[]) {
     const comspec = process.env.ComSpec || "cmd.exe";
     const commandLine = ["npm", ...args].join(" ");
     return spawnSync(comspec, ["/d", "/s", "/c", commandLine], {
-      cwd: process.cwd(),
+      cwd: envBaseDir,
       stdio: ["ignore", "pipe", "pipe"],
       shell: false,
       encoding: "utf8",
@@ -286,7 +323,7 @@ function spawnNpm(args: string[]) {
   }
 
   return spawnSync("npm", args, {
-    cwd: process.cwd(),
+    cwd: envBaseDir,
     stdio: ["ignore", "pipe", "pipe"],
     shell: false,
     encoding: "utf8",
@@ -314,14 +351,6 @@ function parseBoolean(value: unknown): boolean {
     return false;
   }
   throw new Error("Invalid boolean value in environment.");
-}
-
-function resolveOptionalPath(value: unknown): string | null {
-  const raw = String(value ?? "").trim();
-  if (!raw) {
-    return null;
-  }
-  return path.resolve(raw);
 }
 
 function normalizeCodexSandbox(value: unknown): CodexSandbox {
@@ -364,5 +393,5 @@ function resolveWorkspaceRoot(value: unknown): string {
   if (!raw) {
     throw new Error("DEFAULT_WORKSPACE_ROOT must not be empty.");
   }
-  return path.resolve(raw);
+  return resolvePathFromBase(raw, envBaseDir);
 }

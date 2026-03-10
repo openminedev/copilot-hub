@@ -4,14 +4,18 @@ import path from "node:path";
 import process, { stdin as input, stdout as output } from "node:process";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline/promises";
+import { initializeCopilotHubLayout, resolveCopilotHubLayout } from "./install-layout.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const repoRoot = path.resolve(__dirname, "..", "..");
+const layout = resolveCopilotHubLayout({ repoRoot });
 
-const engineEnvPath = path.join(repoRoot, "apps", "agent-engine", ".env");
+initializeCopilotHubLayout({ repoRoot, layout });
+
+const engineEnvPath = layout.agentEngineEnvPath;
 const engineExamplePath = path.join(repoRoot, "apps", "agent-engine", ".env.example");
-const controlPlaneEnvPath = path.join(repoRoot, "apps", "control-plane", ".env");
+const controlPlaneEnvPath = layout.controlPlaneEnvPath;
 const controlPlaneExamplePath = path.join(repoRoot, "apps", "control-plane", ".env.example");
 const TELEGRAM_TOKEN_PATTERN = /^\d{5,}:[A-Za-z0-9_-]{20,}$/;
 const DEFAULT_CONTROL_PLANE_TOKEN_ENV = "HUB_TELEGRAM_TOKEN";
@@ -36,9 +40,9 @@ async function main() {
     } else {
       await configureAll({ rl, controlPlaneLines });
       console.log("\nSaved:");
-      console.log(`- ${relativeFromRepo(controlPlaneEnvPath)}`);
+      console.log(`- ${controlPlaneEnvPath}`);
       console.log("\nNext step:");
-      console.log("1) npm run start");
+      console.log("1) copilot-hub start");
     }
   } finally {
     rl.close();
@@ -67,7 +71,7 @@ async function configureRequiredTokens({ rl, controlPlaneLines }) {
 
   if (!process.stdin.isTTY) {
     throw new Error(
-      "Missing required tokens and no interactive terminal. Run 'npm run configure'.",
+      "Missing required tokens and no interactive terminal. Run 'copilot-hub configure'.",
     );
   }
 
@@ -223,11 +227,6 @@ async function askTelegramToken(rl, label, allowEmpty) {
     }
     console.log("Token format looks invalid. Expected format like: 123456789:AA...");
   }
-}
-
-function relativeFromRepo(filePath) {
-  const relative = path.relative(repoRoot, filePath);
-  return relative || filePath;
 }
 
 function isUsableTelegramToken(value) {

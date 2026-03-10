@@ -82,7 +82,7 @@ copilot-hub start
 
 `start` runs guided setup automatically if required values are missing.
 On interactive terminals, `start` can also offer OS-native service installation when it is not yet configured.
-`start` and `update` also verify the supported Codex CLI range and can install the validated version automatically when needed.
+`start` also verifies the supported Codex CLI range and can install the validated version automatically when needed.
 
 ## Quick start from source
 
@@ -161,15 +161,28 @@ Default values are already applied, and actions start from that agent workspace 
 
 - Never commit real bot tokens.
 - If a token is leaked, regenerate it in `@BotFather` using `/revoke`.
-- Keep local runtime files (`data/`, `logs/`) private.
+- Keep local runtime files private.
 
 ## Startup troubleshooting
 
 - If `npm run start` fails, first read the error and follow the suggested action.
 - `npm run start` now checks that Codex CLI is inside the supported range and can install the validated version automatically if missing or outside that range.
 - For Codex login issues, run `codex login` (or the configured `CODEX_BIN`) and retry `npm run start`.
-- If auto-install is skipped or unavailable, install Codex CLI with `npm install -g @openai/codex@0.113.0` or set `CODEX_BIN` in `.env` to a binary in the supported `0.113.x` range.
+- If auto-install is skipped or unavailable, install Codex CLI with `npm install -g @openai/codex@0.113.0` or set `CODEX_BIN` in your Copilot Hub config to a binary in the supported `0.113.x` range.
 - If you are still stuck, ask your favorite LLM with the exact error output.
+
+## Upgrades
+
+Use the standard npm flow:
+
+```bash
+npm install -g copilot-hub@latest
+copilot-hub restart
+```
+
+If Copilot Hub is not already running, use `copilot-hub start` after the install instead of `copilot-hub restart`.
+
+Tokens, registry data, logs and runtime state are now stored in a persistent per-user Copilot Hub directory, so they survive package upgrades. The runtime also no longer keeps the installed package directory as its working directory, so `npm install -g copilot-hub@latest` can replace the package cleanly on Windows while the service is running.
 
 ## Commands
 
@@ -180,17 +193,10 @@ npm run restart
 npm run status
 npm run logs
 npm run configure
-npm run update
 npm run test
 npm run lint
 npm run format:check
 npm run check:apps
-```
-
-Global update command:
-
-```bash
-copilot-hub update
 ```
 
 Service mode (optional, OS-native):
@@ -238,11 +244,13 @@ Authentication options:
 
 ## Runtime files
 
-- PIDs: `.copilot-hub/pids/`
-- Logs: `logs/`
+- Config, tokens, registry, logs and runtime state live in the per-user Copilot Hub home directory.
+- Windows default: `%APPDATA%\\copilot-hub`
+- macOS default: `~/Library/Application Support/copilot-hub`
+- Linux default: `${XDG_CONFIG_HOME:-~/.config}/copilot-hub`
 
 ## Security
 
 - Never commit real tokens.
-- Keep `.env` and runtime data local.
+- Keep your Copilot Hub home directory private.
 - Rotate leaked tokens immediately.

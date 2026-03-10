@@ -30,6 +30,10 @@
       "types": "./dist/workspace-paths.d.ts",
       "import": "./dist/workspace-paths.js"
     },
+    "./config-paths": {
+      "types": "./dist/config-paths.d.ts",
+      "import": "./dist/config-paths.js"
+    },
     "./instance-lock": {
       "types": "./dist/instance-lock.d.ts",
       "import": "./dist/instance-lock.js"

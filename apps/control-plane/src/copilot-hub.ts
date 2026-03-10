@@ -29,13 +29,17 @@ if (!TELEGRAM_TOKEN_PATTERN.test(hubToken) || hubToken.toLowerCase().includes("r
 const hubId = String(process.env.HUB_ID ?? "copilot_hub").trim() || "copilot_hub";
 const hubName = String(process.env.HUB_NAME ?? "Copilot Hub").trim() || "Copilot Hub";
 const configuredHubWorkspaceRoot = String(process.env.HUB_WORKSPACE_ROOT ?? "").trim();
-const hubWorkspaceRootRaw = path.resolve(configuredHubWorkspaceRoot || config.defaultWorkspaceRoot);
+const hubWorkspaceRootRaw = path.resolve(
+  config.envBaseDir,
+  configuredHubWorkspaceRoot || config.defaultWorkspaceRoot,
+);
 const hubWorkspaceRoot = assertWorkspaceAllowed({
   workspaceRoot: hubWorkspaceRootRaw,
   policy: config.workspacePolicy,
   label: "HUB_WORKSPACE_ROOT",
 });
 const hubDataDir = path.resolve(
+  config.envBaseDir,
   String(process.env.HUB_DATA_DIR ?? path.join(config.dataDir, "copilot_hub")),
 );
 const hubThreadMode = normalizeThreadMode(process.env.HUB_THREAD_MODE ?? "per_chat");

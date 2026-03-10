@@ -14,6 +14,12 @@ export {
   resolveDefaultWorkspaceForBot,
   isPathInside as isWorkspacePathInside,
 } from "./workspace-paths.js";
+export {
+  resolveConfigBaseDir,
+  resolveProcessConfigBaseDir,
+  resolvePathFromBase,
+  resolveOptionalPathFromBase,
+} from "./config-paths.js";
 export { InstanceLock } from "./instance-lock.js";
 export { JsonStateStore } from "./state-store.js";
 export { assertControlPermission } from "./control-permission.js";

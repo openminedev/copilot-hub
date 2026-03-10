@@ -4,32 +4,43 @@ import path from "node:path";
 import process from "node:process";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { initializeCopilotHubLayout, resolveCopilotHubLayout } from "./install-layout.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const repoRoot = path.resolve(__dirname, "..", "..");
+const layout = resolveCopilotHubLayout({ repoRoot });
+initializeCopilotHubLayout({ repoRoot, layout });
 
-const runtimeDir = path.join(repoRoot, ".copilot-hub");
+const runtimeDir = layout.runtimeDir;
 const pidsDir = path.join(runtimeDir, "pids");
-const logsDir = path.join(repoRoot, "logs");
+const logsDir = layout.logsDir;
+const servicesRuntimeDir = path.join(runtimeDir, "services");
 
 const SERVICES = [
   {
     id: "agent-engine",
-    workingDir: path.join(repoRoot, "apps", "agent-engine"),
-    entryScript: "dist/index.js",
+    workingDir: path.join(servicesRuntimeDir, "agent-engine"),
+    entryScript: path.join(repoRoot, "apps", "agent-engine", "dist", "index.js"),
     logFile: path.join(logsDir, "agent-engine.log"),
+    envFilePath: layout.agentEngineEnvPath,
+    dataDir: layout.agentEngineDataDir,
   },
 
   {
     id: "control-plane",
-    workingDir: path.join(repoRoot, "apps", "control-plane"),
-    entryScript: "dist/copilot-hub.js",
+    workingDir: path.join(servicesRuntimeDir, "control-plane"),
+    entryScript: path.join(repoRoot, "apps", "control-plane", "dist", "copilot-hub.js"),
     logFile: path.join(logsDir, "control-plane.log"),
+    envFilePath: layout.controlPlaneEnvPath,
+    dataDir: layout.controlPlaneDataDir,
   },
 ].map((service) => ({
   ...service,
   pidFile: path.join(pidsDir, `${service.id}.json`),
+  botRegistryFilePath: path.join(service.dataDir, "bot-registry.json"),
+  secretStoreFilePath: path.join(service.dataDir, "secrets.json"),
+  instanceLockFilePath: path.join(service.dataDir, "runtime.lock"),
 }));
 
 const action = String(process.argv[2] ?? "up")
@@ -75,7 +86,7 @@ async function startServices() {
       for (let index = started.length - 1; index >= 0; index -= 1) {
         await stopService(started[index]);
       }
-      console.error("One or more services failed to start. Run 'npm run logs' for details.");
+      console.error("One or more services failed to start. Run 'copilot-hub logs' for details.");
       process.exit(1);
     }
     started.push(service);
@@ -152,13 +163,14 @@ async function startService(service, options: { suppressAlreadyRunning?: boolean
 
   let child;
   try {
+    const childEnv = buildServiceEnvironment(service);
     child = spawn(process.execPath, [service.entryScript], {
       cwd: service.workingDir,
       detached: true,
       stdio: ["ignore", logFd, logFd],
       windowsHide: true,
       shell: false,
-      env: process.env,
+      env: childEnv,
     });
   } finally {
     fs.closeSync(logFd);
@@ -327,6 +339,22 @@ function ensureRuntimeDirs() {
   fs.mkdirSync(runtimeDir, { recursive: true });
   fs.mkdirSync(pidsDir, { recursive: true });
   fs.mkdirSync(logsDir, { recursive: true });
+  fs.mkdirSync(servicesRuntimeDir, { recursive: true });
+  for (const service of SERVICES) {
+    fs.mkdirSync(service.workingDir, { recursive: true });
+  }
+}
+
+function buildServiceEnvironment(service) {
+  return {
+    ...process.env,
+    COPILOT_HUB_HOME_DIR: process.env.COPILOT_HUB_HOME_DIR || layout.homeDir,
+    COPILOT_HUB_ENV_PATH: service.envFilePath,
+    BOT_DATA_DIR: service.dataDir,
+    BOT_REGISTRY_FILE: service.botRegistryFilePath,
+    SECRET_STORE_FILE: service.secretStoreFilePath,
+    INSTANCE_LOCK_FILE: service.instanceLockFilePath,
+  };
 }
 
 function printTail(filePath, lines) {

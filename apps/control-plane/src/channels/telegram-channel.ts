@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Bot, type Api, type Context } from "grammy";
+import { resolvePathFromBase, resolveProcessConfigBaseDir } from "@copilot-hub/core/config-paths";
 import { formatCodexQuotaLine } from "@copilot-hub/core/codex-quota-display";
 import {
   maybeHandleHubOpsCallback,
@@ -1303,7 +1304,7 @@ async function readCodexAuthTokens(): Promise<{
 function resolveCodexHomeDir(): string {
   const fromEnv = String(process.env.CODEX_HOME_DIR ?? process.env.CODEX_HOME ?? "").trim();
   if (fromEnv) {
-    return path.resolve(fromEnv);
+    return resolvePathFromBase(fromEnv, resolveProcessConfigBaseDir());
   }
   return path.join(os.homedir(), ".codex");
 }

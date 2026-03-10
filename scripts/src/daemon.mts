@@ -6,6 +6,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { codexInstallPackageSpec } from "./codex-version.mjs";
+import { initializeCopilotHubLayout, resolveCopilotHubLayout } from "./install-layout.mjs";
 import {
   buildCodexCompatibilityError,
   probeCodexVersion,
@@ -16,10 +17,12 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const repoRoot = path.resolve(__dirname, "..", "..");
+const layout = resolveCopilotHubLayout({ repoRoot });
+initializeCopilotHubLayout({ repoRoot, layout });
 
-const runtimeDir = path.join(repoRoot, ".copilot-hub");
+const runtimeDir = layout.runtimeDir;
 const pidsDir = path.join(runtimeDir, "pids");
-const logsDir = path.join(repoRoot, "logs");
+const logsDir = layout.logsDir;
 
 const daemonStatePath = path.join(pidsDir, "daemon.json");
 const lastStartupErrorPath = path.join(runtimeDir, "last-startup-error.json");
@@ -29,8 +32,8 @@ const agentEngineLogPath = path.join(logsDir, "agent-engine.log");
 const daemonScriptPath = path.join(repoRoot, "scripts", "dist", "daemon.mjs");
 const supervisorScriptPath = path.join(repoRoot, "scripts", "dist", "supervisor.mjs");
 const nodeBin = process.execPath;
-const agentEngineEnvPath = path.join(repoRoot, "apps", "agent-engine", ".env");
-const controlPlaneEnvPath = path.join(repoRoot, "apps", "control-plane", ".env");
+const agentEngineEnvPath = layout.agentEngineEnvPath;
+const controlPlaneEnvPath = layout.controlPlaneEnvPath;
 const codexInstallCommand = `npm install -g ${codexInstallPackageSpec}`;
 
 const BASE_CHECK_MS = 5000;
@@ -86,7 +89,7 @@ async function startDaemonProcess() {
   let child;
   try {
     child = spawn(nodeBin, [daemonScriptPath, "run"], {
-      cwd: repoRoot,
+      cwd: runtimeDir,
       detached: true,
       stdio: ["ignore", logFd, logFd],
       windowsHide: true,
@@ -435,7 +438,7 @@ function runSupervisor(actionValue, { allowFailure = false, stdio = "pipe" } = {
 function runChecked(command, args, { stdio = "pipe", allowFailure = false } = {}) {
   const spawnStdio = stdio as "pipe" | "inherit";
   const result = spawnSync(command, args, {
-    cwd: repoRoot,
+    cwd: runtimeDir,
     shell: false,
     stdio: spawnStdio,
     windowsHide: true,
