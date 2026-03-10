@@ -5,6 +5,13 @@ import process from "node:process";
 import { spawn, spawnSync } from "node:child_process";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
+import { codexInstallPackageSpec } from "./codex-version.mjs";
+import {
+  buildCodexCompatibilityError,
+  probeCodexVersion,
+  resolveCodexBinForStart,
+  resolveCompatibleInstalledCodexBin,
+} from "./codex-runtime.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -22,6 +29,9 @@ const agentEngineLogPath = path.join(logsDir, "agent-engine.log");
 const daemonScriptPath = path.join(repoRoot, "scripts", "dist", "daemon.mjs");
 const supervisorScriptPath = path.join(repoRoot, "scripts", "dist", "supervisor.mjs");
 const nodeBin = process.execPath;
+const agentEngineEnvPath = path.join(repoRoot, "apps", "agent-engine", ".env");
+const controlPlaneEnvPath = path.join(repoRoot, "apps", "control-plane", ".env");
+const codexInstallCommand = `npm install -g ${codexInstallPackageSpec}`;
 
 const BASE_CHECK_MS = 5000;
 const MAX_BACKOFF_MS = 60000;
@@ -119,6 +129,26 @@ async function runDaemonLoop() {
 
   const state = { stopping: false, shuttingDown: false };
   setupSignalHandlers(state);
+
+  try {
+    ensureCompatibleCodexForDaemon();
+    clearLastStartupError();
+  } catch (error) {
+    writeLastStartupError({
+      detectedAt: new Date().toISOString(),
+      reason: getErrorMessage(error),
+      action: buildCodexCompatibilityAction(error),
+    });
+    console.error(`[daemon] fatal startup error: ${getErrorMessage(error)}`);
+    console.error(`[daemon] action required: ${buildCodexCompatibilityAction(error)}`);
+    state.stopping = true;
+    await shutdownDaemon(state, {
+      reason: "fatal-codex-compatibility",
+      exitCode: 1,
+      pauseBeforeExit: true,
+    });
+    return;
+  }
 
   console.log(`[daemon] running (pid ${process.pid})`);
 
@@ -612,6 +642,45 @@ function printLastStartupError() {
   if (issue.action) {
     console.log(`action: ${String(issue.action)}`);
   }
+}
+
+function ensureCompatibleCodexForDaemon(): void {
+  const resolved = resolveCodexBinForStart({
+    repoRoot,
+    agentEngineEnvPath,
+    controlPlaneEnvPath,
+  });
+  const currentProbe = probeCodexVersion({
+    codexBin: resolved.bin,
+    repoRoot,
+  });
+  if (currentProbe.ok && currentProbe.compatible) {
+    return;
+  }
+
+  if (!resolved.userConfigured) {
+    const compatibleInstalled = resolveCompatibleInstalledCodexBin({ repoRoot });
+    if (compatibleInstalled) {
+      return;
+    }
+  }
+
+  throw new Error(
+    buildCodexCompatibilityError({
+      resolved,
+      probe: currentProbe,
+      includeInstallHint: !resolved.userConfigured,
+      installCommand: codexInstallCommand,
+    }),
+  );
+}
+
+function buildCodexCompatibilityAction(error: unknown): string {
+  const message = getErrorMessage(error);
+  if (message.includes("Install a compatible version with")) {
+    return `Install a compatible version with '${codexInstallCommand}', then restart the service.`;
+  }
+  return "Update that binary or point CODEX_BIN to a compatible executable, then restart the service.";
 }
 
 function printUsage() {

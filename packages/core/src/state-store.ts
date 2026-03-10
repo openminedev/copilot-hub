@@ -209,8 +209,17 @@ export class JsonStateStore {
   private async readOrInit(): Promise<StateShape> {
     try {
       const raw = await fs.readFile(this.filePath, "utf8");
-      const parsed = JSON.parse(raw);
-      return normalizeStateShape(parsed);
+      try {
+        const parsed = JSON.parse(raw);
+        return normalizeStateShape(parsed);
+      } catch (error) {
+        if (!isJsonSyntaxError(error)) {
+          throw error;
+        }
+
+        await this.recoverCorruptState(raw, error);
+        return { ...EMPTY_STATE };
+      }
     } catch (error) {
       if (getErrorCode(error) === "ENOENT") {
         await this.writeState({ ...EMPTY_STATE });
@@ -229,6 +238,17 @@ export class JsonStateStore {
     const payload = `${JSON.stringify(state, null, 2)}\n`;
     await fs.writeFile(tmpPath, payload, "utf8");
     await fs.rename(tmpPath, this.filePath);
+  }
+
+  private async recoverCorruptState(raw: string, error: unknown): Promise<void> {
+    const backupPath = `${this.filePath}.corrupt-${Date.now()}`;
+    await fs.writeFile(backupPath, raw, "utf8").catch(() => {
+      // Best effort backup only.
+    });
+    await this.writeState({ ...EMPTY_STATE });
+    console.warn(
+      `[state-store] Recovered corrupt state at ${this.filePath}. Backup: ${backupPath}. Error: ${getErrorMessage(error)}`,
+    );
   }
 }
 
@@ -429,4 +449,15 @@ function getErrorCode(error: unknown): string {
   return String((error as { code?: unknown }).code ?? "")
     .trim()
     .toUpperCase();
+}
+
+function isJsonSyntaxError(error: unknown): boolean {
+  return error instanceof SyntaxError;
+}
+
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+  return String(error ?? "Unknown error.");
 }

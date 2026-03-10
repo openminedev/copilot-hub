@@ -8,6 +8,10 @@ import {
   maybeHandleHubOpsCommand,
   maybeHandleHubOpsFollowUp,
 } from "./hub-ops-commands.js";
+import {
+  readCachedCodexQuotaSnapshot,
+  writeCachedCodexQuotaSnapshot,
+} from "./codex-quota-cache.js";
 
 type TelegramChannelConfig = {
   kind?: unknown;
@@ -87,7 +91,6 @@ type CodexUsageSnapshot = {
 } | null;
 
 const CODEX_USAGE_CACHE_TTL_MS = 60_000;
-let cachedCodexUsage: { expiresAt: number; snapshot: CodexUsageSnapshot } | null = null;
 
 export class TelegramChannel {
   kind: "telegram";
@@ -1177,8 +1180,9 @@ function hasQuotaWindowsSnapshot(snapshot: unknown): boolean {
 
 async function fetchCodexQuotaSnapshotFromAuth(): Promise<CodexUsageSnapshot> {
   const now = Date.now();
-  if (cachedCodexUsage && now < cachedCodexUsage.expiresAt) {
-    return cachedCodexUsage.snapshot;
+  const cached = readCachedCodexQuotaSnapshot(now);
+  if (cached) {
+    return cached as CodexUsageSnapshot;
   }
 
   const auth = await readCodexAuthTokens();
@@ -1237,10 +1241,7 @@ async function fetchCodexQuotaSnapshotFromAuth(): Promise<CodexUsageSnapshot> {
     }
 
     const snapshot: CodexUsageSnapshot = { primary, secondary };
-    cachedCodexUsage = {
-      expiresAt: now + CODEX_USAGE_CACHE_TTL_MS,
-      snapshot,
-    };
+    writeCachedCodexQuotaSnapshot(snapshot, now + CODEX_USAGE_CACHE_TTL_MS);
     return snapshot;
   } catch {
     return null;

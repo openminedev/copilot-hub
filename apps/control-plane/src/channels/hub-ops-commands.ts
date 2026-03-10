@@ -1,18 +1,28 @@
 import { randomBytes } from "node:crypto";
+import { invalidateCodexQuotaUsageCache } from "./codex-quota-cache.js";
 import {
-  applyBotModelPolicy,
-  applyModelPolicyToBots,
-  applyRuntimeModelPolicy,
+  applyBotProviderPolicy,
+  applyProviderPolicyToBots,
+  applyRuntimeProviderPolicy,
+  buildReasoningOptionsForModel,
   buildSessionModelOptions,
   fetchCodexModelOptions,
+  formatFastModeLabel,
   formatModelButtonText,
   formatModelLabel,
+  formatReasoningLabel,
   getBotPolicyState,
-  getRuntimeModel,
+  getBotProviderSelection,
+  getRuntimeProviderSelection,
+  type ModelSelectionResult,
+  type ProviderPolicyPatch,
   parseSetModelAllCommand,
   parseSetModelCommand,
   resolveModelSelectionFromAction,
+  resolveReasoningSelectionFromAction,
   resolveSharedModel,
+  resolveSharedReasoningEffort,
+  resolveSharedServiceTier,
 } from "./hub-model-utils.js";
 
 type SandboxMode = "read-only" | "workspace-write" | "danger-full-access";
@@ -29,6 +39,7 @@ type PolicyProfile = {
 };
 
 type ModelSelectionOption = ReturnType<typeof buildSessionModelOptions>[number];
+type ReasoningSelectionOption = ReturnType<typeof buildReasoningOptionsForModel>[number];
 
 type TelegramChat = {
   id?: string | number | null;
@@ -87,6 +98,14 @@ type MenuSession = {
   createdAt: number;
   botIds: string[];
   modelOptions: ModelSelectionOption[];
+  reasoningOptions: ReasoningSelectionOption[];
+  pendingProviderPatch: ProviderPolicyPatch | null;
+  pendingFlow: "model_reasoning" | "speed" | null;
+  pendingSummary: {
+    modelLabel: string | null;
+    reasoningLabel: string | null;
+    speedLabel: string | null;
+  };
 };
 
 type TelegramVerificationFailure = {
@@ -128,21 +147,20 @@ type HubOpsMenuAction =
   | { type: "back" }
   | { type: "create" }
   | { type: "refresh"; sessionId: string }
-  | { type: "model_home"; sessionId: string }
-  | { type: "model_open"; sessionId: string; index: number }
+  | { type: "agents_home"; sessionId: string }
   | { type: "global_model_open"; sessionId: string }
+  | { type: "global_fast_open"; sessionId: string }
   | { type: "global_model"; sessionId: string; profileId: string }
+  | { type: "global_fast_apply"; sessionId: string; profileId: string }
+  | { type: "global_reasoning_apply"; sessionId: string; modelProfileId: string; profileId: string }
+  | { type: "target_choice"; sessionId: string; profileId: string }
+  | { type: "target_agent_apply"; sessionId: string; index: number }
   | {
       type: "open" | "reset_ask" | "reset_confirm" | "delete_ask" | "delete_confirm";
       sessionId: string;
       index: number;
     }
-  | {
-      type: "policy" | "model" | "model_apply";
-      sessionId: string;
-      index: number;
-      profileId: string;
-    };
+  | { type: "policy"; sessionId: string; index: number; profileId: string };
 
 type HealthResponse = {
   ok?: boolean;
@@ -417,15 +435,16 @@ export async function maybeHandleHubOpsCommand({
         .split(/\s+/)
         .filter(Boolean).length;
       if (tokenCount <= 1) {
-        await renderSetModelAgentMenu(ctx, { editMessage: false });
+        await renderGlobalModelMenu(ctx, { editMessage: false, runtime: runtime ?? null });
         return true;
       }
 
       const parsed = parseSetModelCommand(text, BOT_ID_PATTERN);
       if (!parsed.ok) {
-        await renderSetModelAgentMenu(ctx, {
+        await renderGlobalModelMenu(ctx, {
           editMessage: false,
-          notice: "Choose the agent from the list below.",
+          runtime: runtime ?? null,
+          notice: "Choose a model first, then the target.",
         });
         return true;
       }
@@ -436,17 +455,21 @@ export async function maybeHandleHubOpsCommand({
         return true;
       }
 
-      await applyBotModelPolicy({
+      await applyBotProviderPolicy({
         apiPost,
         botId: parsed.botId,
         botState,
-        model: parsed.model,
+        patch: {
+          model: parsed.model,
+          reasoningEffort: null,
+        },
       });
 
       const modelLabel = parsed.model ? parsed.model : "auto (workspace default)";
       await ctx.reply(
         [
           `Model updated for '${parsed.botId}': ${modelLabel}`,
+          "Reasoning reset to the model default.",
           "Change applies on next message while preserving conversation history.",
         ].join("\n"),
       );
@@ -470,9 +493,12 @@ export async function maybeHandleHubOpsCommand({
       }
 
       const bots = await fetchBots();
-      const result = await applyGlobalModelSelection({
+      const result = await applyGlobalProviderSelection({
         bots,
-        model: parsed.model,
+        patch: {
+          model: parsed.model,
+          reasoningEffort: null,
+        },
         runtime: runtime ?? null,
       });
       if (result.totalTargets === 0) {
@@ -481,7 +507,11 @@ export async function maybeHandleHubOpsCommand({
       }
 
       const modelLabel = parsed.model ? parsed.model : "auto (workspace default)";
-      const lines = buildGlobalModelUpdateLines({ modelLabel, result });
+      const lines = buildGlobalModelUpdateLines({
+        modelLabel,
+        reasoningLabel: "Default",
+        result,
+      });
       lines.push("Change applies on next message while preserving conversation history.");
       await ctx.reply(lines.join("\n"));
       return true;
@@ -536,7 +566,13 @@ export async function maybeHandleHubOpsFollowUp({
   const flowKey = buildFlowKey(runtime?.runtimeId, channelId, chatId);
   const codexFlow = codexSwitchFlows.get(flowKey);
   if (codexFlow) {
-    const handled = await handleCodexSwitchFlow({ ctx, flowKey, flow: codexFlow, text });
+    const handled = await handleCodexSwitchFlow({
+      ctx,
+      flowKey,
+      flow: codexFlow,
+      text,
+      runtime: runtime ?? null,
+    });
     if (handled) {
       return true;
     }
@@ -651,11 +687,13 @@ async function handleCodexSwitchFlow({
   flowKey,
   flow,
   text,
+  runtime,
 }: {
   ctx: HubOpsContext;
   flowKey: string;
   flow: CodexSwitchFlow;
   text: string;
+  runtime?: HubRuntimeInfo | null;
 }): Promise<boolean> {
   if (flow.step !== "api_key") {
     codexSwitchFlows.delete(flowKey);
@@ -676,11 +714,12 @@ async function handleCodexSwitchFlow({
       apiKey,
     });
     codexSwitchFlows.delete(flowKey);
+    const refreshMessage = await refreshHubProviderAfterCodexLogin(runtime);
 
     const refreshedBots = readRefreshedBotIds(result);
     const refreshFailures = readRefreshFailures(result);
 
-    const lines = ["Codex account switched successfully."];
+    const lines = ["Codex account switched successfully.", refreshMessage];
     if (result?.detail) {
       lines.push(`status: ${String(result.detail)}`);
     }
@@ -738,19 +777,10 @@ export async function maybeHandleHubOpsCallback({
       return true;
     }
 
-    if (action.type === "model_home") {
-      await renderSetModelAgentMenu(ctx, {
+    if (action.type === "agents_home") {
+      await renderAgentsMenu(ctx, {
         sessionId: action.sessionId,
         editMessage: true,
-      });
-      await answerCallbackQuerySafe(ctx);
-      return true;
-    }
-
-    if (action.type === "model_open") {
-      await renderBotModelMenu(ctx, {
-        sessionId: action.sessionId,
-        index: action.index,
       });
       await answerCallbackQuerySafe(ctx);
       return true;
@@ -763,6 +793,73 @@ export async function maybeHandleHubOpsCallback({
         runtime: runtime ?? null,
       });
       await answerCallbackQuerySafe(ctx);
+      return true;
+    }
+
+    if (action.type === "global_fast_open") {
+      await renderGlobalFastMenu(ctx, {
+        sessionId: action.sessionId,
+        editMessage: true,
+        runtime: runtime ?? null,
+      });
+      await answerCallbackQuerySafe(ctx);
+      return true;
+    }
+
+    if (action.type === "target_choice") {
+      const session = getMenuSession(action.sessionId, ctx);
+      if (!session || !session.pendingProviderPatch || !session.pendingFlow) {
+        await renderBotsMenu(ctx, {
+          editMessage: true,
+          notice: "Selection expired. Open the menu again.",
+        });
+        await answerCallbackQuerySafe(ctx, "Selection expired");
+        return true;
+      }
+
+      if (action.profileId === "single") {
+        await renderProviderTargetAgentMenu(ctx, {
+          sessionId: action.sessionId,
+          editMessage: true,
+        });
+        await answerCallbackQuerySafe(ctx);
+        return true;
+      }
+
+      if (action.profileId === "all" || action.profileId === "all_hub") {
+        const bots = await fetchBots();
+        const result = await applyGlobalProviderSelection({
+          bots,
+          patch: session.pendingProviderPatch,
+          runtime: action.profileId === "all_hub" ? (runtime ?? null) : null,
+        });
+        const lines =
+          session.pendingFlow === "speed"
+            ? buildGlobalFastUpdateLines({
+                fastLabel: session.pendingSummary.speedLabel ?? "Standard",
+                result,
+              })
+            : buildGlobalModelUpdateLines({
+                modelLabel: session.pendingSummary.modelLabel ?? "auto (workspace default)",
+                reasoningLabel: session.pendingSummary.reasoningLabel ?? "Default",
+                result,
+              });
+        lines.push(
+          session.pendingFlow === "speed"
+            ? "Speed changes apply on next message."
+            : "Change applies on next message while preserving conversation history.",
+        );
+        clearPendingProviderSelection(session);
+        menuSessions.set(action.sessionId, session);
+        await renderBotsMenu(ctx, {
+          editMessage: true,
+          notice: lines.join("\n"),
+        });
+        await answerCallbackQuerySafe(ctx, "Updated");
+        return true;
+      }
+
+      await answerCallbackQuerySafe(ctx, "Invalid target");
       return true;
     }
 
@@ -789,42 +886,109 @@ export async function maybeHandleHubOpsCallback({
           sessionId: action.sessionId,
           editMessage: true,
           runtime: runtime ?? null,
-          notice: "Model options expired. Open /set_model_all again.",
+          notice: "Model menu expired. Open Model & Reasoning again.",
         });
         await answerCallbackQuerySafe(ctx, "Model menu expired");
         return true;
       }
 
-      const bots = await fetchBots();
-      const result = await applyGlobalModelSelection({
-        bots,
-        model: selection.model,
+      if (selection.model) {
+        await renderGlobalReasoningMenu(ctx, {
+          sessionId: action.sessionId,
+          runtime: runtime ?? null,
+          modelSelection: selection,
+        });
+        await answerCallbackQuerySafe(ctx);
+        return true;
+      }
+
+      setPendingProviderSelection(session, {
+        patch: {
+          model: null,
+          reasoningEffort: null,
+        },
+        flow: "model_reasoning",
+        modelLabel: selection.label,
+        reasoningLabel: "Default",
+      });
+      menuSessions.set(action.sessionId, session);
+      await renderProviderTargetMenu(ctx, {
+        sessionId: action.sessionId,
+        editMessage: true,
         runtime: runtime ?? null,
       });
-      if (result.totalTargets === 0) {
+      await answerCallbackQuerySafe(ctx);
+      return true;
+    }
+
+    if (action.type === "global_reasoning_apply") {
+      const modelSelection = resolveModelSelectionFromAction({
+        session,
+        profileId: action.modelProfileId,
+      });
+      if (!modelSelection.ok || !modelSelection.model) {
         await renderGlobalModelMenu(ctx, {
           sessionId: action.sessionId,
           editMessage: true,
           runtime: runtime ?? null,
-          notice: "No agents found and hub model control is unavailable.",
+          notice: "Model menu expired. Open Model & Reasoning again.",
         });
-        await answerCallbackQuerySafe(ctx, "No targets");
+        await answerCallbackQuerySafe(ctx, "Model menu expired");
         return true;
       }
 
-      const lines = buildGlobalModelUpdateLines({
-        modelLabel: selection.label,
-        result,
+      const reasoningOptions = buildReasoningOptionsForModel({
+        modelSelection,
       });
-      lines.push("Change applies on next message while preserving conversation history.");
+      const reasoningSelection = resolveReasoningSelectionFromAction({
+        options: reasoningOptions,
+        profileId: action.profileId,
+      });
+      if (!reasoningSelection.ok) {
+        await renderGlobalReasoningMenu(ctx, {
+          sessionId: action.sessionId,
+          runtime: runtime ?? null,
+          modelSelection,
+          notice: "Reasoning options expired. Choose the model again.",
+        });
+        await answerCallbackQuerySafe(ctx, "Reasoning menu expired");
+        return true;
+      }
 
-      await renderGlobalModelMenu(ctx, {
+      setPendingProviderSelection(session, {
+        patch: {
+          model: modelSelection.model,
+          reasoningEffort: reasoningSelection.reasoningEffort,
+        },
+        flow: "model_reasoning",
+        modelLabel: modelSelection.label,
+        reasoningLabel: reasoningSelection.label,
+      });
+      menuSessions.set(action.sessionId, session);
+      await renderProviderTargetMenu(ctx, {
         sessionId: action.sessionId,
         editMessage: true,
         runtime: runtime ?? null,
-        notice: lines.join("\n"),
       });
-      await answerCallbackQuerySafe(ctx, "Model updated");
+      await answerCallbackQuerySafe(ctx);
+      return true;
+    }
+
+    if (action.type === "global_fast_apply") {
+      setPendingProviderSelection(session, {
+        patch: {
+          serviceTier: action.profileId === "fast" ? "fast" : null,
+        },
+        flow: "speed",
+        speedLabel: action.profileId === "fast" ? "Fast" : "Standard",
+      });
+      menuSessions.set(action.sessionId, session);
+      await renderProviderTargetMenu(ctx, {
+        sessionId: action.sessionId,
+        editMessage: true,
+        runtime: runtime ?? null,
+      });
+      await answerCallbackQuerySafe(ctx);
       return true;
     }
 
@@ -832,6 +996,50 @@ export async function maybeHandleHubOpsCallback({
     if (!botId) {
       await renderBotsMenu(ctx, { editMessage: true });
       await answerCallbackQuerySafe(ctx, "Agent not found. Refreshed.");
+      return true;
+    }
+
+    if (action.type === "target_agent_apply") {
+      if (!session.pendingProviderPatch || !session.pendingFlow) {
+        await renderBotsMenu(ctx, {
+          editMessage: true,
+          notice: "Selection expired. Open the menu again.",
+        });
+        await answerCallbackQuerySafe(ctx, "Selection expired");
+        return true;
+      }
+
+      const botState = await fetchBotById(botId);
+      if (!botState) {
+        await renderAgentsMenu(ctx, {
+          sessionId: action.sessionId,
+          editMessage: true,
+          notice: `Agent '${botId}' not found.`,
+        });
+        await answerCallbackQuerySafe(ctx, "Agent not found");
+        return true;
+      }
+
+      await applyBotProviderPolicy({
+        apiPost,
+        botId,
+        botState,
+        patch: session.pendingProviderPatch,
+      });
+
+      const notice =
+        session.pendingFlow === "speed"
+          ? `Speed updated for '${botId}': ${session.pendingSummary.speedLabel ?? "Standard"}`
+          : `Model updated for '${botId}': ${session.pendingSummary.modelLabel ?? "auto"} / ${
+              session.pendingSummary.reasoningLabel ?? "Default"
+            }`;
+      clearPendingProviderSelection(session);
+      menuSessions.set(action.sessionId, session);
+      await renderBotsMenu(ctx, {
+        editMessage: true,
+        notice,
+      });
+      await answerCallbackQuerySafe(ctx, "Updated");
       return true;
     }
 
@@ -869,86 +1077,6 @@ export async function maybeHandleHubOpsCallback({
       return true;
     }
 
-    if (action.type === "model") {
-      const botState = await fetchBotById(botId);
-      if (!botState) {
-        await renderBotsMenu(ctx, { editMessage: true, notice: `Agent '${botId}' not found.` });
-        await answerCallbackQuerySafe(ctx, "Agent not found");
-        return true;
-      }
-
-      const selection = resolveModelSelectionFromAction({
-        session,
-        profileId: action.profileId,
-      });
-      if (!selection.ok) {
-        await renderBotActions(ctx, {
-          sessionId: action.sessionId,
-          index: action.index,
-          notice: "Model options expired. Open /bots again.",
-        });
-        await answerCallbackQuerySafe(ctx, "Model menu expired");
-        return true;
-      }
-
-      await applyBotModelPolicy({
-        apiPost,
-        botId,
-        botState,
-        model: selection.model,
-      });
-
-      await renderBotActions(ctx, {
-        sessionId: action.sessionId,
-        index: action.index,
-        notice: `Model updated: ${selection.label}`,
-      });
-      await answerCallbackQuerySafe(ctx, "Model updated");
-      return true;
-    }
-
-    if (action.type === "model_apply") {
-      const botState = await fetchBotById(botId);
-      if (!botState) {
-        await renderSetModelAgentMenu(ctx, {
-          sessionId: action.sessionId,
-          editMessage: true,
-          notice: `Agent '${botId}' not found.`,
-        });
-        await answerCallbackQuerySafe(ctx, "Agent not found");
-        return true;
-      }
-
-      const selection = resolveModelSelectionFromAction({
-        session,
-        profileId: action.profileId,
-      });
-      if (!selection.ok) {
-        await renderBotModelMenu(ctx, {
-          sessionId: action.sessionId,
-          index: action.index,
-          notice: "Model options expired. Open /set_model again.",
-        });
-        await answerCallbackQuerySafe(ctx, "Model menu expired");
-        return true;
-      }
-
-      await applyBotModelPolicy({
-        apiPost,
-        botId,
-        botState,
-        model: selection.model,
-      });
-
-      await renderBotModelMenu(ctx, {
-        sessionId: action.sessionId,
-        index: action.index,
-        notice: `Model updated: ${selection.label}`,
-      });
-      await answerCallbackQuerySafe(ctx, "Model updated");
-      return true;
-    }
-
     if (action.type === "reset_ask") {
       await renderResetConfirm(ctx, {
         sessionId: action.sessionId,
@@ -982,7 +1110,8 @@ export async function maybeHandleHubOpsCallback({
 
     if (action.type === "delete_confirm") {
       await apiPost(`/api/bots/${encodeURIComponent(botId)}/delete`, { deleteMode: "soft" });
-      await renderBotsMenu(ctx, {
+      await renderAgentsMenu(ctx, {
+        sessionId: action.sessionId,
         editMessage: true,
         notice: `Agent deleted: ${botId}`,
       });
@@ -996,7 +1125,7 @@ export async function maybeHandleHubOpsCallback({
     await answerCallbackQuerySafe(ctx, "Action failed");
     await editMessageOrReply(ctx, `Action failed:\n${sanitizeError(error)}`, {
       reply_markup: {
-        inline_keyboard: [[{ text: "Back to bots", callback_data: "hub:back" }]],
+        inline_keyboard: [[{ text: "Back to menu", callback_data: "hub:back" }]],
       },
     });
     return true;
@@ -1008,32 +1137,25 @@ function buildHelpText(runtimeName: string | null | undefined): string {
     `${String(runtimeName ?? "Copilot Hub")}`,
     "",
     "Commands:",
-    "/help",
-    "/health",
     "/bots",
+    "/health",
     "/create_agent",
     "/codex_status",
     "/codex_login",
     "/codex_switch_key",
     "/set_model",
-    "/set_model_all",
     "/cancel",
     "",
-    "Codex account:",
-    "/codex_login: switch account with device code flow",
+    "/bots: open the main control menu",
+    "/set_model: open Model & Reasoning directly",
+    "/codex_login: switch account with device code",
     "/codex_switch_key: switch account with API key",
     "",
-    "Policy guide in /bots:",
-    "Safe: read-only + approval prompts",
-    "Standard: workspace write + approval prompts",
-    "Semi Auto: workspace write + ask on failures",
-    "Full: no approval prompts",
-    "All agent actions start from that agent workspace.",
-    "Model changes apply on next message and keep conversation history.",
-    "/set_model opens a clickable agent->model flow.",
-    "/set_model_all opens a clickable model list for all agents and the hub.",
-    "",
-    "For development tasks, send a normal message to the assistant.",
+    "Use /bots for:",
+    "Agents",
+    "Model & Reasoning",
+    "Speed",
+    "Create agent",
   ].join("\n");
 }
 
@@ -1089,6 +1211,59 @@ async function renderBotsMenu(
   if (notice) {
     lines.push(notice, "");
   }
+  lines.push("Control menu:");
+  lines.push(`agents: ${bots.length}`);
+  if (bots.length > 0) {
+    const runningCount = bots.filter((bot) => bot.running).length;
+    lines.push(`running: ${runningCount}/${bots.length}`);
+  }
+  lines.push("", "Choose a section:");
+
+  const keyboard = buildBotsMenuKeyboard(sessionId, bots);
+
+  if (editMessage) {
+    await editMessageOrReply(ctx, lines.join("\n"), {
+      reply_markup: {
+        inline_keyboard: keyboard,
+      },
+    });
+    return;
+  }
+
+  await ctx.reply(lines.join("\n"), {
+    reply_markup: {
+      inline_keyboard: keyboard,
+    },
+  });
+}
+
+async function renderAgentsMenu(
+  ctx: HubOpsContext,
+  {
+    sessionId = "",
+    editMessage = false,
+    notice = "",
+  }: { sessionId?: string; editMessage?: boolean; notice?: string } = {},
+): Promise<void> {
+  const bots = await fetchBots();
+  const chatId = getChatId(ctx);
+  const activeSessionId = sessionId || createMenuSession(chatId, bots);
+  const session = getMenuSession(activeSessionId, ctx);
+  if (!session) {
+    await renderBotsMenu(ctx, {
+      editMessage,
+      notice: "Menu expired. Open /bots again.",
+    });
+    return;
+  }
+  session.botIds = bots.map((entry) => String(entry?.id ?? "").trim()).filter(Boolean);
+  clearPendingProviderSelection(session);
+  menuSessions.set(activeSessionId, session);
+
+  const lines = [];
+  if (notice) {
+    lines.push(notice, "");
+  }
   lines.push("Agents:");
 
   if (bots.length === 0) {
@@ -1098,10 +1273,10 @@ async function renderBotsMenu(
       const status = botState.running ? "ON" : "OFF";
       lines.push(`- ${botState.id} (${status})`);
     }
-    lines.push("", "Tap an agent below.");
+    lines.push("", "Choose an agent:");
   }
 
-  const keyboard = buildBotsMenuKeyboard(sessionId, bots);
+  const keyboard = buildAgentsMenuKeyboard(activeSessionId, bots);
 
   if (editMessage) {
     await editMessageOrReply(ctx, lines.join("\n"), {
@@ -1126,29 +1301,28 @@ async function renderBotActions(
   const session = getMenuSession(sessionId, ctx);
   const botId = getBotIdFromSession(session, index);
   if (!botId) {
-    await renderBotsMenu(ctx, { editMessage: true, notice: "Agent not found. Refreshed." });
+    await renderAgentsMenu(ctx, {
+      sessionId,
+      editMessage: true,
+      notice: "Agent not found. Refreshed.",
+    });
     return;
   }
 
   const botState = await fetchBotById(botId);
   if (!botState) {
-    await renderBotsMenu(ctx, { editMessage: true, notice: `Agent '${botId}' not found.` });
+    await renderAgentsMenu(ctx, {
+      sessionId,
+      editMessage: true,
+      notice: `Agent '${botId}' not found.`,
+    });
     return;
   }
 
-  const providerOptions =
-    botState?.provider?.options && typeof botState.provider.options === "object"
-      ? botState.provider.options
-      : {};
-  const currentModel = String(providerOptions.model ?? "").trim();
+  const providerSelection = getBotProviderSelection(botState);
   const botPolicyState = getBotPolicyState(botState);
-  const modelCatalog = await fetchCodexModelOptions(apiGet);
-  const modelOptions = buildSessionModelOptions({
-    catalog: modelCatalog.models,
-    currentModel,
-  });
   if (session) {
-    session.modelOptions = modelOptions;
+    clearPendingProviderSelection(session);
     menuSessions.set(sessionId, session);
   }
 
@@ -1162,7 +1336,9 @@ async function renderBotActions(
     `telegram: ${botState.telegramRunning ? "yes" : "no"}`,
     `sandboxMode: ${botPolicyState.sandboxMode}`,
     `approvalPolicy: ${botPolicyState.approvalPolicy}`,
-    `model: ${formatModelLabel(providerOptions.model)}`,
+    `model: ${formatModelLabel(providerSelection.model)}`,
+    `reasoning: ${formatReasoningLabel(providerSelection.reasoningEffort)}`,
+    `speed: ${formatFastModeLabel(providerSelection.serviceTier)}`,
     "",
     "Policy quick guide:",
     "Safe = read-only + approval prompts",
@@ -1170,20 +1346,14 @@ async function renderBotActions(
     "Semi Auto = workspace write + ask on failures",
     "Full = no approval prompts",
     "All actions start from this agent workspace.",
-    "Model changes apply on next message and keep conversation history.",
-    modelCatalog.available
-      ? `Available models: ${modelCatalog.models.length}`
-      : "Available models: unavailable (you can still use /set_model).",
+    "Use the main menu for Model & Reasoning and Speed.",
     "",
     "Choose an action:",
   );
 
   await editMessageOrReply(ctx, lines.join("\n"), {
     reply_markup: {
-      inline_keyboard: buildBotActionsKeyboard(sessionId, index, {
-        modelOptions,
-        currentModel,
-      }),
+      inline_keyboard: buildBotActionsKeyboard(sessionId, index),
     },
   });
 }
@@ -1202,7 +1372,7 @@ async function renderResetConfirm(
             { text: "Confirm reset", callback_data: `hub:rc:${sessionId}:${index}` },
             { text: "Cancel", callback_data: `hub:o:${sessionId}:${index}` },
           ],
-          [{ text: "Back to bots", callback_data: "hub:back" }],
+          [{ text: "Back to agents", callback_data: `hub:ag:${sessionId}` }],
         ],
       },
     },
@@ -1223,7 +1393,7 @@ async function renderDeleteConfirm(
             { text: "Confirm delete", callback_data: `hub:dc:${sessionId}:${index}` },
             { text: "Cancel", callback_data: `hub:o:${sessionId}:${index}` },
           ],
-          [{ text: "Back to bots", callback_data: "hub:back" }],
+          [{ text: "Back to agents", callback_data: `hub:ag:${sessionId}` }],
         ],
       },
     },
@@ -1231,6 +1401,17 @@ async function renderDeleteConfirm(
 }
 
 function buildBotsMenuKeyboard(sessionId: string, bots: BotState[]): InlineKeyboardButton[][] {
+  const hasBots = bots.length > 0;
+  return [
+    [{ text: "Agents", callback_data: `hub:ag:${sessionId}` }],
+    [{ text: "Model & Reasoning", callback_data: `hub:ga:${sessionId}` }],
+    [{ text: "Speed", callback_data: `hub:gf:${sessionId}` }],
+    [{ text: "Create agent", callback_data: "hub:create" }],
+    ...(hasBots ? [[{ text: "Refresh", callback_data: `hub:r:${sessionId}` }]] : []),
+  ];
+}
+
+function buildAgentsMenuKeyboard(sessionId: string, bots: BotState[]): InlineKeyboardButton[][] {
   const rows: InlineKeyboardButton[][] = [];
 
   for (let index = 0; index < bots.length; index += 1) {
@@ -1244,9 +1425,8 @@ function buildBotsMenuKeyboard(sessionId: string, bots: BotState[]): InlineKeybo
     ]);
   }
 
-  rows.push([{ text: "Refresh", callback_data: `hub:r:${sessionId}` }]);
-  rows.push([{ text: "Set model for all", callback_data: `hub:ga:${sessionId}` }]);
-  rows.push([{ text: "Create agent", callback_data: "hub:create" }]);
+  rows.push([{ text: "Refresh", callback_data: `hub:ag:${sessionId}` }]);
+  rows.push([{ text: "Back to menu", callback_data: "hub:back" }]);
   return rows;
 }
 
@@ -1280,7 +1460,7 @@ async function renderGlobalModelMenu(
   if (!session) {
     await renderBotsMenu(ctx, {
       editMessage,
-      notice: "Menu expired. Open /set_model_all again.",
+      notice: "Menu expired. Open Model & Reasoning again.",
     });
     return;
   }
@@ -1292,25 +1472,21 @@ async function renderGlobalModelMenu(
     catalog: modelCatalog.models,
     currentModel,
   });
+  clearPendingProviderSelection(session);
   session.modelOptions = modelOptions;
+  session.reasoningOptions = [];
   menuSessions.set(activeSessionId, session);
 
   const lines = [];
   if (notice) {
     lines.push(notice, "");
   }
-  lines.push(hubIncluded ? "Global model for all agents and hub:" : "Global model for all agents:");
+  lines.push("Model & Reasoning:");
   lines.push(`agents: ${bots.length}`);
-  if (hubIncluded) {
-    lines.push("hub: included");
-  }
+  lines.push(`hub available: ${hubIncluded ? "yes" : "no"}`);
   lines.push(
-    `current: ${
-      sharedModel.mode === "uniform"
-        ? formatModelLabel(sharedModel.model)
-        : hubIncluded
-          ? "mixed (agents and hub use different models)"
-          : "mixed (agents use different models)"
+    `current model: ${
+      sharedModel.mode === "uniform" ? formatModelLabel(sharedModel.model) : "mixed"
     }`,
   );
   lines.push(
@@ -1342,16 +1518,107 @@ async function renderGlobalModelMenu(
   });
 }
 
-async function renderSetModelAgentMenu(
+async function renderGlobalReasoningMenu(
+  ctx: HubOpsContext,
+  {
+    sessionId,
+    runtime = null,
+    modelSelection,
+    editMessage = true,
+    notice = "",
+  }: {
+    sessionId: string;
+    runtime?: HubRuntimeInfo | null;
+    modelSelection: ModelSelectionResult;
+    editMessage?: boolean;
+    notice?: string;
+  },
+): Promise<void> {
+  const bots = await fetchBots();
+  const hubIncluded = isHubModelControlAvailable(runtime);
+  if (bots.length === 0 && !hubIncluded) {
+    await renderBotsMenu(ctx, {
+      editMessage,
+      notice: notice || "No agents found.",
+    });
+    return;
+  }
+
+  const session = getMenuSession(sessionId, ctx);
+  if (!session) {
+    await renderBotsMenu(ctx, {
+      editMessage,
+      notice: "Menu expired. Open Model & Reasoning again.",
+    });
+    return;
+  }
+
+  const sharedReasoning = resolveSharedReasoningForGlobalTargets(bots, runtime);
+  const currentModel = resolveSharedModelForGlobalTargets(bots, runtime);
+  const reasoningOptions = buildReasoningOptionsForModel({
+    modelSelection,
+    currentModel:
+      currentModel.mode === "uniform" && currentModel.model === modelSelection.model
+        ? currentModel.model
+        : null,
+    currentReasoningEffort:
+      sharedReasoning.mode === "uniform" ? sharedReasoning.reasoningEffort : null,
+  });
+  session.reasoningOptions = reasoningOptions;
+  menuSessions.set(sessionId, session);
+
+  const lines = [];
+  if (notice) {
+    lines.push(notice, "");
+  }
+  lines.push("Model & Reasoning:");
+  lines.push(`model: ${modelSelection.label}`);
+  lines.push(
+    `current reasoning: ${
+      sharedReasoning.mode === "uniform"
+        ? formatReasoningLabel(sharedReasoning.reasoningEffort)
+        : "mixed"
+    }`,
+  );
+  lines.push("", "Choose the reasoning level:");
+
+  const keyboard = buildGlobalReasoningKeyboard(sessionId, modelSelection.key, {
+    reasoningOptions,
+  });
+
+  if (editMessage) {
+    await editMessageOrReply(ctx, lines.join("\n"), {
+      reply_markup: {
+        inline_keyboard: keyboard,
+      },
+    });
+    return;
+  }
+
+  await ctx.reply(lines.join("\n"), {
+    reply_markup: {
+      inline_keyboard: keyboard,
+    },
+  });
+}
+
+async function renderGlobalFastMenu(
   ctx: HubOpsContext,
   {
     sessionId = "",
     editMessage = false,
+    runtime = null,
     notice = "",
-  }: { sessionId?: string; editMessage?: boolean; notice?: string } = {},
+  }: {
+    sessionId?: string;
+    editMessage?: boolean;
+    runtime?: HubRuntimeInfo | null;
+    notice?: string;
+  } = {},
 ): Promise<void> {
   const bots = await fetchBots();
-  if (bots.length === 0) {
+  const hubIncluded = isHubModelControlAvailable(runtime);
+  if (bots.length === 0 && !hubIncluded) {
     await renderBotsMenu(ctx, {
       editMessage,
       notice: notice || "No agents found.",
@@ -1365,20 +1632,37 @@ async function renderSetModelAgentMenu(
   if (!session) {
     await renderBotsMenu(ctx, {
       editMessage,
-      notice: "Menu expired. Open /set_model again.",
+      notice: "Menu expired. Open /bots again.",
     });
     return;
   }
+
+  const sharedServiceTier = resolveSharedServiceTierForGlobalTargets(bots, runtime);
+  clearPendingProviderSelection(session);
+  session.reasoningOptions = [];
+  menuSessions.set(activeSessionId, session);
 
   const lines = [];
   if (notice) {
     lines.push(notice, "");
   }
-  lines.push("Set model: choose an agent.");
+  lines.push("Speed:");
   lines.push(`agents: ${bots.length}`);
-  lines.push("", "Pick one:");
+  lines.push(`hub available: ${hubIncluded ? "yes" : "no"}`);
+  lines.push(
+    `current speed: ${
+      sharedServiceTier.mode === "uniform"
+        ? formatFastModeLabel(sharedServiceTier.serviceTier)
+        : "mixed"
+    }`,
+  );
+  lines.push("", "Choose the speed mode:");
 
-  const keyboard = buildSetModelAgentKeyboard(activeSessionId, bots);
+  const keyboard = buildGlobalFastKeyboard(activeSessionId, {
+    serviceTier: sharedServiceTier.mode === "uniform" ? sharedServiceTier.serviceTier : null,
+    hasMixedSelection: sharedServiceTier.mode === "mixed",
+  });
+
   if (editMessage) {
     await editMessageOrReply(ctx, lines.join("\n"), {
       reply_markup: {
@@ -1395,67 +1679,54 @@ async function renderSetModelAgentMenu(
   });
 }
 
-async function renderBotModelMenu(
+async function renderProviderTargetMenu(
   ctx: HubOpsContext,
   {
     sessionId,
-    index,
+    runtime = null,
     editMessage = true,
     notice = "",
-  }: { sessionId: string; index: number; editMessage?: boolean; notice?: string },
+  }: {
+    sessionId: string;
+    runtime?: HubRuntimeInfo | null;
+    editMessage?: boolean;
+    notice?: string;
+  },
 ): Promise<void> {
+  const bots = await fetchBots();
   const session = getMenuSession(sessionId, ctx);
-  const botId = getBotIdFromSession(session, index);
-  if (!botId) {
-    await renderSetModelAgentMenu(ctx, {
-      sessionId,
-      editMessage: true,
-      notice: "Agent not found. Refreshed.",
+  if (!session || !session.pendingProviderPatch || !session.pendingFlow) {
+    await renderBotsMenu(ctx, {
+      editMessage,
+      notice: "Selection expired. Open the menu again.",
     });
     return;
   }
 
-  const botState = await fetchBotById(botId);
-  if (!botState) {
-    await renderSetModelAgentMenu(ctx, {
-      sessionId,
-      editMessage: true,
-      notice: `Agent '${botId}' not found.`,
-    });
-    return;
-  }
+  session.botIds = bots.map((entry) => String(entry?.id ?? "").trim()).filter(Boolean);
+  menuSessions.set(sessionId, session);
 
-  const providerOptions =
-    botState?.provider?.options && typeof botState.provider.options === "object"
-      ? botState.provider.options
-      : {};
-  const currentModel = String(providerOptions.model ?? "").trim();
-  const modelCatalog = await fetchCodexModelOptions(apiGet);
-  const modelOptions = buildSessionModelOptions({
-    catalog: modelCatalog.models,
-    currentModel,
-  });
-  if (session) {
-    session.modelOptions = modelOptions;
-    menuSessions.set(sessionId, session);
-  }
-
+  const hubIncluded = isHubModelControlAvailable(runtime);
   const lines = [];
   if (notice) {
     lines.push(notice, "");
   }
-  lines.push(`Agent '${botId}' model:`);
-  lines.push(`current: ${formatModelLabel(currentModel)}`);
-  lines.push(
-    modelCatalog.available
-      ? `available models: ${modelCatalog.models.length}`
-      : "available models: unavailable right now",
-  );
-  lines.push("", "Choose a model:");
+  lines.push(session.pendingFlow === "speed" ? "Speed" : "Model & Reasoning");
+  if (session.pendingSummary.modelLabel) {
+    lines.push(`model: ${session.pendingSummary.modelLabel}`);
+  }
+  if (session.pendingSummary.reasoningLabel) {
+    lines.push(`reasoning: ${session.pendingSummary.reasoningLabel}`);
+  }
+  if (session.pendingSummary.speedLabel) {
+    lines.push(`speed: ${session.pendingSummary.speedLabel}`);
+  }
+  lines.push("", "Choose where to apply it:");
 
-  const keyboard = buildBotModelKeyboard(sessionId, index, {
-    modelOptions,
-    currentModel,
+  const keyboard = buildProviderTargetKeyboard(sessionId, {
+    hubIncluded,
+    backCallbackData:
+      session.pendingFlow === "speed" ? `hub:gf:${sessionId}` : `hub:ga:${sessionId}`,
   });
 
   if (editMessage) {
@@ -1474,15 +1745,99 @@ async function renderBotModelMenu(
   });
 }
 
-function buildBotActionsKeyboard(
-  sessionId: string,
-  index: number,
+async function renderProviderTargetAgentMenu(
+  ctx: HubOpsContext,
   {
-    modelOptions = [],
-    currentModel = "",
-  }: { modelOptions?: ModelSelectionOption[]; currentModel?: string } = {},
-): InlineKeyboardButton[][] {
-  const rows: InlineKeyboardButton[][] = [
+    sessionId,
+    editMessage = true,
+    notice = "",
+  }: { sessionId: string; editMessage?: boolean; notice?: string },
+): Promise<void> {
+  const bots = await fetchBots();
+  const session = getMenuSession(sessionId, ctx);
+  if (!session || !session.pendingProviderPatch || !session.pendingFlow) {
+    await renderBotsMenu(ctx, {
+      editMessage,
+      notice: "Selection expired. Open the menu again.",
+    });
+    return;
+  }
+
+  session.botIds = bots.map((entry) => String(entry?.id ?? "").trim()).filter(Boolean);
+  menuSessions.set(sessionId, session);
+
+  const lines = [];
+  if (notice) {
+    lines.push(notice, "");
+  }
+  lines.push("Choose one agent:");
+  if (session.pendingSummary.modelLabel) {
+    lines.push(`model: ${session.pendingSummary.modelLabel}`);
+  }
+  if (session.pendingSummary.reasoningLabel) {
+    lines.push(`reasoning: ${session.pendingSummary.reasoningLabel}`);
+  }
+  if (session.pendingSummary.speedLabel) {
+    lines.push(`speed: ${session.pendingSummary.speedLabel}`);
+  }
+
+  const keyboard = buildProviderTargetAgentKeyboard(sessionId, bots, {
+    backCallbackData: `hub:tt:${sessionId}:single`,
+  });
+
+  if (editMessage) {
+    await editMessageOrReply(ctx, lines.join("\n"), {
+      reply_markup: {
+        inline_keyboard: keyboard,
+      },
+    });
+    return;
+  }
+
+  await ctx.reply(lines.join("\n"), {
+    reply_markup: {
+      inline_keyboard: keyboard,
+    },
+  });
+}
+
+function setPendingProviderSelection(
+  session: MenuSession,
+  {
+    patch,
+    flow,
+    modelLabel = null,
+    reasoningLabel = null,
+    speedLabel = null,
+  }: {
+    patch: ProviderPolicyPatch;
+    flow: "model_reasoning" | "speed";
+    modelLabel?: string | null;
+    reasoningLabel?: string | null;
+    speedLabel?: string | null;
+  },
+): void {
+  session.pendingProviderPatch = { ...patch };
+  session.pendingFlow = flow;
+  session.pendingSummary = {
+    modelLabel,
+    reasoningLabel,
+    speedLabel,
+  };
+}
+
+function clearPendingProviderSelection(session: MenuSession): void {
+  session.pendingProviderPatch = null;
+  session.pendingFlow = null;
+  session.pendingSummary = {
+    modelLabel: null,
+    reasoningLabel: null,
+    speedLabel: null,
+  };
+}
+
+function buildBotActionsKeyboard(sessionId: string, index: number): InlineKeyboardButton[][] {
+  return [
     [
       { text: "Safe (read-only)", callback_data: `hub:p:${sessionId}:${index}:safe` },
       { text: "Standard (ask)", callback_data: `hub:p:${sessionId}:${index}:standard` },
@@ -1491,94 +1846,10 @@ function buildBotActionsKeyboard(
       { text: "Semi (fail ask)", callback_data: `hub:p:${sessionId}:${index}:semi_auto` },
       { text: "Full (no prompts)", callback_data: `hub:p:${sessionId}:${index}:full_auto` },
     ],
-    [
-      {
-        text: formatModelButtonText("Auto", currentModel === ""),
-        callback_data: `hub:m:${sessionId}:${index}:auto`,
-      },
-    ],
-  ];
-
-  for (const option of modelOptions) {
-    const isCurrent =
-      String(currentModel ?? "")
-        .trim()
-        .toLowerCase() ===
-      String(option.model ?? "")
-        .trim()
-        .toLowerCase();
-    rows.push([
-      {
-        text: formatModelButtonText(option.label, isCurrent),
-        callback_data: `hub:m:${sessionId}:${index}:${option.key}`,
-      },
-    ]);
-  }
-
-  rows.push(
     [{ text: "Reset Context", callback_data: `hub:ra:${sessionId}:${index}` }],
     [{ text: "Delete Agent", callback_data: `hub:da:${sessionId}:${index}` }],
-    [{ text: "Back to bots", callback_data: "hub:back" }],
-  );
-  return rows;
-}
-
-function buildSetModelAgentKeyboard(sessionId: string, bots: BotState[]): InlineKeyboardButton[][] {
-  const rows: InlineKeyboardButton[][] = [];
-  for (let index = 0; index < bots.length; index += 1) {
-    const botState = bots[index];
-    if (!botState) {
-      continue;
-    }
-    const status = botState.running ? "ON" : "OFF";
-    rows.push([
-      {
-        text: `${botState.id} (${status})`,
-        callback_data: `hub:mo:${sessionId}:${index}`,
-      },
-    ]);
-  }
-  rows.push([{ text: "Refresh", callback_data: `hub:sm:${sessionId}` }]);
-  rows.push([{ text: "Back to bots", callback_data: "hub:back" }]);
-  return rows;
-}
-
-function buildBotModelKeyboard(
-  sessionId: string,
-  index: number,
-  {
-    modelOptions = [],
-    currentModel = "",
-  }: { modelOptions?: ModelSelectionOption[]; currentModel?: string } = {},
-): InlineKeyboardButton[][] {
-  const rows: InlineKeyboardButton[][] = [
-    [
-      {
-        text: formatModelButtonText("Auto", currentModel === ""),
-        callback_data: `hub:mm:${sessionId}:${index}:auto`,
-      },
-    ],
+    [{ text: "Back to agents", callback_data: `hub:ag:${sessionId}` }],
   ];
-
-  for (const option of modelOptions) {
-    const isCurrent =
-      String(currentModel ?? "")
-        .trim()
-        .toLowerCase() ===
-      String(option.model ?? "")
-        .trim()
-        .toLowerCase();
-    rows.push([
-      {
-        text: formatModelButtonText(option.label, isCurrent),
-        callback_data: `hub:mm:${sessionId}:${index}:${option.key}`,
-      },
-    ]);
-  }
-
-  rows.push([{ text: "Back to agents", callback_data: `hub:sm:${sessionId}` }]);
-  rows.push([{ text: "Back to bots", callback_data: "hub:back" }]);
-  return rows;
 }
 
 function buildGlobalModelKeyboard(
@@ -1619,7 +1890,106 @@ function buildGlobalModelKeyboard(
     ]);
   }
 
-  rows.push([{ text: "Back to bots", callback_data: "hub:back" }]);
+  rows.push([{ text: "Back to menu", callback_data: "hub:back" }]);
+  return rows;
+}
+
+function buildGlobalReasoningKeyboard(
+  sessionId: string,
+  modelProfileId: string,
+  { reasoningOptions = [] }: { reasoningOptions?: ReasoningSelectionOption[] } = {},
+): InlineKeyboardButton[][] {
+  const rows: InlineKeyboardButton[][] = [];
+
+  for (const option of reasoningOptions) {
+    rows.push([
+      {
+        text: formatModelButtonText(option.label, option.selected === true),
+        callback_data: `hub:gr:${sessionId}:${modelProfileId}:${option.key}`,
+      },
+    ]);
+  }
+
+  rows.push([{ text: "Back to model", callback_data: `hub:ga:${sessionId}` }]);
+  rows.push([{ text: "Back to menu", callback_data: "hub:back" }]);
+  return rows;
+}
+
+function buildGlobalFastKeyboard(
+  sessionId: string,
+  {
+    serviceTier = null,
+    hasMixedSelection = false,
+  }: { serviceTier?: string | null; hasMixedSelection?: boolean } = {},
+): InlineKeyboardButton[][] {
+  return [
+    [
+      {
+        text: formatModelButtonText("Standard", !hasMixedSelection && serviceTier !== "fast"),
+        callback_data: `hub:gft:${sessionId}:standard`,
+      },
+    ],
+    [
+      {
+        text: formatModelButtonText("Fast", !hasMixedSelection && serviceTier === "fast"),
+        callback_data: `hub:gft:${sessionId}:fast`,
+      },
+    ],
+    [{ text: "Back to menu", callback_data: "hub:back" }],
+  ];
+}
+
+function buildProviderTargetKeyboard(
+  sessionId: string,
+  {
+    hubIncluded,
+    backCallbackData,
+  }: {
+    hubIncluded: boolean;
+    backCallbackData: string;
+  },
+): InlineKeyboardButton[][] {
+  const rows: InlineKeyboardButton[][] = [
+    [{ text: "One agent", callback_data: `hub:tt:${sessionId}:single` }],
+    [{ text: "All agents", callback_data: `hub:tt:${sessionId}:all` }],
+  ];
+
+  if (hubIncluded) {
+    rows.push([{ text: "All agents + hub", callback_data: `hub:tt:${sessionId}:all_hub` }]);
+  }
+
+  rows.push([{ text: "Back", callback_data: backCallbackData }]);
+  rows.push([{ text: "Back to menu", callback_data: "hub:back" }]);
+  return rows;
+}
+
+function buildProviderTargetAgentKeyboard(
+  sessionId: string,
+  bots: BotState[],
+  {
+    backCallbackData,
+  }: {
+    backCallbackData: string;
+  },
+): InlineKeyboardButton[][] {
+  const rows: InlineKeyboardButton[][] = [];
+
+  for (let index = 0; index < bots.length; index += 1) {
+    const botState = bots[index];
+    if (!botState) {
+      continue;
+    }
+    const status = botState.running ? "ON" : "OFF";
+    rows.push([
+      {
+        text: `${botState.id} (${status})`,
+        callback_data: `hub:ta:${sessionId}:${index}`,
+      },
+    ]);
+  }
+
+  rows.push([{ text: "Back", callback_data: backCallbackData }]);
+  rows.push([{ text: "Back to menu", callback_data: "hub:back" }]);
   return rows;
 }
 
@@ -1642,6 +2012,14 @@ function createMenuSession(chatId: string, bots: BotState[]): string {
     createdAt: Date.now(),
     botIds: bots.map((entry) => String(entry?.id ?? "").trim()).filter(Boolean),
     modelOptions: [],
+    reasoningOptions: [],
+    pendingProviderPatch: null,
+    pendingFlow: null,
+    pendingSummary: {
+      modelLabel: null,
+      reasoningLabel: null,
+      speedLabel: null,
+    },
   });
 
   return sessionId;
@@ -1720,24 +2098,30 @@ function parseMenuAction(rawData: string): HubOpsMenuAction | null {
     };
   }
 
-  if (kind === "sm" && parts.length === 3) {
+  if (kind === "gf" && parts.length === 3) {
     const sessionId = parts[2];
     if (!sessionId) {
       return null;
     }
     return {
-      type: "model_home",
+      type: "global_fast_open",
+      sessionId,
+    };
+  }
+
+  if (kind === "ag" && parts.length === 3) {
+    const sessionId = parts[2];
+    if (!sessionId) {
+      return null;
+    }
+    return {
+      type: "agents_home",
       sessionId,
     };
   }
 
   if (
-    (kind === "o" ||
-      kind === "mo" ||
-      kind === "ra" ||
-      kind === "rc" ||
-      kind === "da" ||
-      kind === "dc") &&
+    (kind === "o" || kind === "ra" || kind === "rc" || kind === "da" || kind === "dc") &&
     parts.length === 4
   ) {
     const sessionId = parts[2];
@@ -1751,7 +2135,6 @@ function parseMenuAction(rawData: string): HubOpsMenuAction | null {
 
     const mapping = {
       o: "open",
-      mo: "model_open",
       ra: "reset_ask",
       rc: "reset_confirm",
       da: "delete_ask",
@@ -1769,7 +2152,7 @@ function parseMenuAction(rawData: string): HubOpsMenuAction | null {
     };
   }
 
-  if ((kind === "p" || kind === "m" || kind === "mm") && parts.length === 5) {
+  if (kind === "p" && parts.length === 5) {
     const index = parseMenuIndex(parts[3]);
     const profileId = String(parts[4] ?? "")
       .trim()
@@ -1783,7 +2166,7 @@ function parseMenuAction(rawData: string): HubOpsMenuAction | null {
     }
 
     return {
-      type: kind === "p" ? "policy" : kind === "m" ? "model" : "model_apply",
+      type: "policy",
       sessionId,
       index,
       profileId,
@@ -1805,10 +2188,72 @@ function parseMenuAction(rawData: string): HubOpsMenuAction | null {
     };
   }
 
+  if (kind === "gft" && parts.length === 4) {
+    const sessionId = parts[2];
+    const profileId = String(parts[3] ?? "")
+      .trim()
+      .toLowerCase();
+    if (!sessionId || !profileId) {
+      return null;
+    }
+    return {
+      type: "global_fast_apply",
+      sessionId,
+      profileId,
+    };
+  }
+
+  if (kind === "tt" && parts.length === 4) {
+    const sessionId = parts[2];
+    const profileId = String(parts[3] ?? "")
+      .trim()
+      .toLowerCase();
+    if (!sessionId || !profileId) {
+      return null;
+    }
+    return {
+      type: "target_choice",
+      sessionId,
+      profileId,
+    };
+  }
+
+  if (kind === "ta" && parts.length === 4) {
+    const sessionId = parts[2];
+    const index = parseMenuIndex(parts[3]);
+    if (!sessionId || index === null) {
+      return null;
+    }
+    return {
+      type: "target_agent_apply",
+      sessionId,
+      index,
+    };
+  }
+
+  if (kind === "gr" && parts.length === 5) {
+    const sessionId = parts[2];
+    const modelProfileId = String(parts[3] ?? "")
+      .trim()
+      .toLowerCase();
+    const profileId = String(parts[4] ?? "")
+      .trim()
+      .toLowerCase();
+    if (!sessionId || !modelProfileId || !profileId) {
+      return null;
+    }
+    return {
+      type: "global_reasoning_apply",
+      sessionId,
+      modelProfileId,
+      profileId,
+    };
+  }
+
   return null;
 }
 
-type GlobalModelApplyResult = {
+type GlobalProviderApplyResult = {
   updatedCount: number;
   totalTargets: number;
   botFailures: Array<{ botId: string; error: string }>;
@@ -1826,34 +2271,56 @@ function resolveSharedModelForGlobalTargets(
 ): { mode: "uniform"; model: string | null } | { mode: "mixed" } {
   const models = bots.map((bot) => bot?.provider?.options?.model);
   if (runtime && typeof runtime.getProviderOptions === "function") {
-    models.push(getRuntimeModel(runtime));
+    models.push(getRuntimeProviderSelection(runtime).model);
   }
   return resolveSharedModel(models);
 }
 
-async function applyGlobalModelSelection({
+function resolveSharedReasoningForGlobalTargets(
+  bots: BotState[],
+  runtime?: HubRuntimeInfo | null,
+): { mode: "uniform"; reasoningEffort: string | null } | { mode: "mixed" } {
+  const values = bots.map((bot) => bot?.provider?.options?.reasoningEffort);
+  if (runtime && typeof runtime.getProviderOptions === "function") {
+    values.push(getRuntimeProviderSelection(runtime).reasoningEffort);
+  }
+  return resolveSharedReasoningEffort(values);
+}
+
+function resolveSharedServiceTierForGlobalTargets(
+  bots: BotState[],
+  runtime?: HubRuntimeInfo | null,
+): { mode: "uniform"; serviceTier: string | null } | { mode: "mixed" } {
+  const values = bots.map((bot) => bot?.provider?.options?.serviceTier);
+  if (runtime && typeof runtime.getProviderOptions === "function") {
+    values.push(getRuntimeProviderSelection(runtime).serviceTier);
+  }
+  return resolveSharedServiceTier(values);
+}
+
+async function applyGlobalProviderSelection({
   bots,
-  model,
+  patch,
   runtime,
 }: {
   bots: BotState[];
-  model: string | null;
+  patch: ProviderPolicyPatch;
   runtime?: HubRuntimeInfo | null;
-}): Promise<GlobalModelApplyResult> {
+}): Promise<GlobalProviderApplyResult> {
   const hubIncluded = isHubModelControlAvailable(runtime);
-  const botResult = await applyModelPolicyToBots({
+  const botResult = await applyProviderPolicyToBots({
     apiPost,
     bots,
-    model,
+    patch,
   });
 
   let hubError: string | null = null;
   let hubUpdated = false;
   if (hubIncluded) {
     try {
-      await applyRuntimeModelPolicy({
+      await applyRuntimeProviderPolicy({
         runtime,
-        model,
+        patch,
       });
       hubUpdated = true;
     } catch (error) {
@@ -1872,15 +2339,49 @@ async function applyGlobalModelSelection({
 
 function buildGlobalModelUpdateLines({
   modelLabel,
+  reasoningLabel,
   result,
 }: {
   modelLabel: string;
-  result: GlobalModelApplyResult;
+  reasoningLabel: string;
+  result: GlobalProviderApplyResult;
 }): string[] {
   const lines = [
     result.hubIncluded
-      ? `Model updated for all agents and hub: ${modelLabel}`
-      : `Model updated for all agents: ${modelLabel}`,
+      ? `Model updated for all agents and hub: ${modelLabel} / ${reasoningLabel}`
+      : `Model updated for all agents: ${modelLabel} / ${reasoningLabel}`,
+    `Updated: ${result.updatedCount}/${result.totalTargets}`,
+  ];
+
+  if (result.botFailures.length > 0 || result.hubError) {
+    lines.push(`Warnings: ${result.botFailures.length + (result.hubError ? 1 : 0)}`);
+  }
+
+  if (result.botFailures.length > 0) {
+    const failedIds = result.botFailures.map((entry) => entry.botId).filter(Boolean);
+    if (failedIds.length > 0) {
+      lines.push(`Failed agents: ${failedIds.join(", ")}`);
+    }
+  }
+
+  if (result.hubError) {
+    lines.push(`Hub warning: ${result.hubError}`);
+  }
+
+  return lines;
+}
+
+function buildGlobalFastUpdateLines({
+  fastLabel,
+  result,
+}: {
+  fastLabel: string;
+  result: GlobalProviderApplyResult;
+}): string[] {
+  const lines = [
+    result.hubIncluded
+      ? `Speed updated for all agents and hub: ${fastLabel}`
+      : `Speed updated for all agents: ${fastLabel}`,
     `Updated: ${result.updatedCount}/${result.totalTargets}`,
   ];
 
@@ -2265,6 +2766,7 @@ async function watchCodexLoginCompletion({
 }
 
 async function refreshHubProviderAfterCodexLogin(runtime?: HubRuntimeInfo | null): Promise<string> {
+  invalidateCodexQuotaUsageCache();
   if (!runtime || typeof runtime.refreshProviderSession !== "function") {
     return "Account updated. Hub refresh is not available on this runtime.";
   }

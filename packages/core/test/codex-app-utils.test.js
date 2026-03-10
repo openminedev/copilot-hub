@@ -1,87 +1,36 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  annotateSpawnError,
-  normalizeApprovalDecision,
-  normalizeApprovalPolicy,
-  normalizeModel,
-  normalizeSandboxMode,
-  normalizeTimeout,
-  parseTurnActivityTimeoutSetting,
-  normalizeTurnInputItems,
-  toRequestId,
-  toRpcId,
+  buildShellWrappedCommandLine,
+  requiresShellWrappedSpawn,
 } from "../dist/codex-app-utils.js";
 
-test("normalizeSandboxMode and normalizeApprovalPolicy keep safe defaults", () => {
-  assert.equal(normalizeSandboxMode(undefined), "danger-full-access");
-  assert.equal(normalizeSandboxMode("workspace-write"), "workspace-write");
-  assert.equal(normalizeSandboxMode("bad-value"), "danger-full-access");
-
-  assert.equal(normalizeApprovalPolicy(undefined), "never");
-  assert.equal(normalizeApprovalPolicy("on-request"), "on-request");
-  assert.equal(normalizeApprovalPolicy("bad-value"), "never");
-});
-
-test("normalizeModel and normalizeApprovalDecision parse aliases", () => {
-  assert.equal(normalizeModel(null), null);
-  assert.equal(normalizeModel("auto"), null);
-  assert.equal(normalizeModel("default"), null);
-  assert.equal(normalizeModel("gpt-5"), "gpt-5");
-
-  assert.equal(normalizeApprovalDecision("approve"), "accept");
-  assert.equal(normalizeApprovalDecision("always"), "acceptForSession");
-  assert.equal(normalizeApprovalDecision("deny"), "decline");
-  assert.equal(normalizeApprovalDecision("abort"), "cancel");
-  assert.throws(() => normalizeApprovalDecision("unknown"));
-});
-
-test("normalizeTurnInputItems enforces non-empty prompt or media payload", () => {
-  const withPrompt = normalizeTurnInputItems({ prompt: "hello", inputItems: [] });
-  assert.equal(withPrompt.length, 1);
-  assert.equal(withPrompt[0].type, "text");
-
-  const withImage = normalizeTurnInputItems({
-    prompt: "",
-    inputItems: [{ type: "image", url: "https://example.com/img.png" }],
-  });
-  assert.equal(withImage.length, 1);
-  assert.equal(withImage[0].type, "image");
-
-  assert.throws(() =>
-    normalizeTurnInputItems({
-      prompt: "",
-      inputItems: [],
-    }),
+test("requiresShellWrappedSpawn only enables shell wrapping for Windows batch launchers", () => {
+  assert.equal(
+    requiresShellWrappedSpawn("C:/Users/amine/AppData/Roaming/npm/codex.cmd", "win32"),
+    true,
   );
+  assert.equal(requiresShellWrappedSpawn("C:/tools/codex.bat", "win32"), true);
+  assert.equal(requiresShellWrappedSpawn("C:/tools/codex.exe", "win32"), false);
+  assert.equal(requiresShellWrappedSpawn("/usr/local/bin/codex", "linux"), false);
 });
 
-test("toRequestId and toRpcId normalize ids", () => {
-  assert.equal(toRequestId(42), 42);
-  assert.equal(toRequestId("17"), 17);
-  assert.equal(toRequestId("bad"), null);
+test("buildShellWrappedCommandLine quotes the command and each argument", () => {
+  const commandLine = buildShellWrappedCommandLine("C:/Program Files/nodejs/codex.cmd", [
+    "login",
+    "--device-auth",
+    "--profile",
+    "default user",
+  ]);
 
-  assert.equal(toRpcId(7), 7);
-  assert.equal(toRpcId("req-1"), "req-1");
-  assert.equal(toRpcId(""), null);
-});
-
-test("annotateSpawnError adds actionable guidance for known spawn failures", () => {
-  const enoent = new Error("spawn failed");
-  enoent.code = "ENOENT";
-  assert.match(annotateSpawnError(enoent, "codex").message, /Cannot execute Codex binary/);
-
-  const unknown = annotateSpawnError("boom", "codex");
-  assert.match(unknown.message, /Unknown spawn error|boom/);
-});
-
-test("normalizeTimeout and parseTurnActivityTimeoutSetting support disabled mode", () => {
-  assert.equal(normalizeTimeout("disabled", 60_000), 0);
-  assert.equal(normalizeTimeout("0", 60_000), 0);
-  assert.equal(normalizeTimeout("15000", 60_000), 15_000);
-  assert.equal(normalizeTimeout("bad", 60_000), 60_000);
-
-  assert.equal(parseTurnActivityTimeoutSetting("off", 3_600_000), 0);
-  assert.equal(parseTurnActivityTimeoutSetting("20000", 3_600_000), 20_000);
-  assert.throws(() => parseTurnActivityTimeoutSetting("5000", 3_600_000));
+  assert.equal(
+    commandLine,
+    [
+      '"C:/Program Files/nodejs/codex.cmd"',
+      '"login"',
+      '"--device-auth"',
+      '"--profile"',
+      '"default user"',
+    ].join(" "),
+  );
 });

@@ -3,6 +3,8 @@ export type JsonObject = Record<string, unknown>;
 export type SandboxMode = "read-only" | "workspace-write" | "danger-full-access";
 export type ApprovalPolicy = "untrusted" | "on-failure" | "on-request" | "never";
 export type ModelValue = string | null;
+export type ReasoningEffortValue = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | null;
+export type ServiceTierValue = "fast" | "flex" | null;
 export type ApprovalDecision = "accept" | "acceptForSession" | "decline" | "cancel";
 
 export function normalizeSandboxMode(value: unknown): SandboxMode {
@@ -41,6 +43,52 @@ export function normalizeModel(value: unknown): ModelValue {
   }
 
   return normalized;
+}
+
+export function normalizeReasoningEffort(value: unknown): ReasoningEffortValue {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  const normalized = String(value).trim().toLowerCase();
+  if (!normalized || normalized === "auto" || normalized === "default") {
+    return null;
+  }
+
+  if (
+    normalized === "none" ||
+    normalized === "minimal" ||
+    normalized === "low" ||
+    normalized === "medium" ||
+    normalized === "high" ||
+    normalized === "xhigh"
+  ) {
+    return normalized;
+  }
+
+  return null;
+}
+
+export function normalizeServiceTier(value: unknown): ServiceTierValue {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  const normalized = String(value).trim().toLowerCase();
+  if (
+    !normalized ||
+    normalized === "auto" ||
+    normalized === "default" ||
+    normalized === "standard"
+  ) {
+    return null;
+  }
+
+  if (normalized === "fast" || normalized === "flex") {
+    return normalized;
+  }
+
+  return null;
 }
 
 export function normalizeApprovalDecision(value: unknown): ApprovalDecision {
@@ -102,6 +150,19 @@ export function normalizeCliPath(value: string): string {
   return String(value).replace(/\\/g, "/");
 }
 
+export function requiresShellWrappedSpawn(
+  command: unknown,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  return platform === "win32" && /\.(cmd|bat)$/i.test(String(command ?? "").trim());
+}
+
+export function buildShellWrappedCommandLine(command: string, args: readonly string[]): string {
+  return [quoteWindowsShellValue(command), ...args.map((arg) => quoteWindowsShellValue(arg))].join(
+    " ",
+  );
+}
+
 function parseTimeoutValue(value: unknown): number | null {
   const raw = String(value ?? "").trim();
   if (!raw) {
@@ -161,7 +222,18 @@ export function annotateSpawnError(error: unknown, command: string): Error {
     );
   }
 
+  if (process.platform === "win32" && errnoError.code === "EINVAL") {
+    const detail = requiresShellWrappedSpawn(command)
+      ? "On Windows, .cmd/.bat launchers must be started through the shell."
+      : "Verify CODEX_BIN points to a valid executable for this platform.";
+    return new Error([`Cannot execute Codex binary '${command}' (EINVAL).`, detail].join("\n"));
+  }
+
   return error;
+}
+
+function quoteWindowsShellValue(value: unknown): string {
+  return `"${String(value ?? "").replace(/"/g, '\\"')}"`;
 }
 
 export function normalizeTurnInputItems({

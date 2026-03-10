@@ -18,6 +18,8 @@ import type { KernelSecretStore } from "./secret-store.js";
 type DeleteMode = "soft" | "purge_data" | "purge_all";
 type SandboxMode = "read-only" | "workspace-write" | "danger-full-access";
 type ApprovalPolicy = "on-request" | "on-failure" | "never";
+type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
+type ServiceTier = "fast" | "flex";
 type ControlAction = (typeof CONTROL_ACTIONS)[keyof typeof CONTROL_ACTIONS];
 
 type RegistryAgent = Record<string, unknown>;
@@ -77,6 +79,7 @@ export class KernelControlPlane {
   registryFilePath: string;
   registryLoadOptions: RegistryLoadOptions;
   secretStore: KernelSecretStore | null;
+  registryMutationTail: Promise<void>;
 
   constructor({
     botManager,
@@ -94,6 +97,7 @@ export class KernelControlPlane {
     this.registryLoadOptions =
       registryLoadOptions && typeof registryLoadOptions === "object" ? registryLoadOptions : {};
     this.secretStore = secretStore;
+    this.registryMutationTail = Promise.resolve();
   }
 
   async handleAgentAction({
@@ -169,10 +173,12 @@ export class KernelControlPlane {
           throw new Error("payload.agent is required.");
         }
         const startIfEnabled = safePayload.startIfEnabled !== false;
-        const created = await this.#createBot({
-          rawAgent: agent as RegistryAgent,
-          startIfEnabled,
-        });
+        const created = await this.#withRegistryMutationLock(() =>
+          this.#createBot({
+            rawAgent: agent as RegistryAgent,
+            startIfEnabled,
+          }),
+        );
         return created;
       }
 
@@ -187,12 +193,14 @@ export class KernelControlPlane {
         if (purgeWorkspace) {
           ensureSecretStore(this.secretStore);
         }
-        const deleted = await this.#deleteBot({
-          botId,
-          deleteMode,
-          purgeData,
-          purgeWorkspace,
-        });
+        const deleted = await this.#withRegistryMutationLock(() =>
+          this.#deleteBot({
+            botId,
+            deleteMode,
+            purgeData,
+            purgeWorkspace,
+          }),
+        );
         return {
           deleted: true,
           ...deleted,
@@ -221,12 +229,28 @@ export class KernelControlPlane {
         const sandboxMode = requireSandboxMode(safePayload.sandboxMode);
         const approvalPolicy = requireApprovalPolicy(safePayload.approvalPolicy);
         const hasModelOverride = Object.prototype.hasOwnProperty.call(safePayload, "model");
+        const hasReasoningEffortOverride = Object.prototype.hasOwnProperty.call(
+          safePayload,
+          "reasoningEffort",
+        );
+        const hasServiceTierOverride = Object.prototype.hasOwnProperty.call(
+          safePayload,
+          "serviceTier",
+        );
         const model = hasModelOverride ? requireOptionalModel(safePayload.model) : undefined;
+        const reasoningEffort = hasReasoningEffortOverride
+          ? requireOptionalReasoningEffort(safePayload.reasoningEffort)
+          : undefined;
+        const serviceTier = hasServiceTierOverride
+          ? requireOptionalServiceTier(safePayload.serviceTier)
+          : undefined;
         const policyPayload: {
           botId: string;
           sandboxMode: SandboxMode;
           approvalPolicy: ApprovalPolicy;
           model?: string | null;
+          reasoningEffort?: ReasoningEffort | null;
+          serviceTier?: ServiceTier | null;
         } = {
           botId,
           sandboxMode,
@@ -235,7 +259,13 @@ export class KernelControlPlane {
         if (hasModelOverride && model !== undefined) {
           policyPayload.model = model;
         }
-        return this.#setBotPolicy(policyPayload);
+        if (hasReasoningEffortOverride && reasoningEffort !== undefined) {
+          policyPayload.reasoningEffort = reasoningEffort;
+        }
+        if (hasServiceTierOverride && serviceTier !== undefined) {
+          policyPayload.serviceTier = serviceTier;
+        }
+        return this.#withRegistryMutationLock(() => this.#setBotPolicy(policyPayload));
       }
 
       case CONTROL_ACTIONS.BOTS_CAPABILITIES_LIST: {
@@ -257,11 +287,13 @@ export class KernelControlPlane {
         const botId = requireNonEmptyString(safePayload.botId, "payload.botId");
         const capabilityId = normalizeCapabilityId(safePayload.capabilityId);
         const capabilityName = normalizeCapabilityName(safePayload.capabilityName, capabilityId);
-        const result = await this.#scaffoldCapability({
-          botId,
-          capabilityId,
-          capabilityName,
-        });
+        const result = await this.#withRegistryMutationLock(() =>
+          this.#scaffoldCapability({
+            botId,
+            capabilityId,
+            capabilityName,
+          }),
+        );
         return result;
       }
 
@@ -336,7 +368,7 @@ export class KernelControlPlane {
       const bot = await this.botManager.registerBot(normalized, { startIfEnabled });
       return { bot, paths };
     } catch (error) {
-      await fs.writeFile(this.registryFilePath, previousRegistryText, "utf8").catch(() => {
+      await writeTextFileAtomic(this.registryFilePath, previousRegistryText).catch(() => {
         // Best effort rollback only.
       });
       throw error;
@@ -402,7 +434,7 @@ export class KernelControlPlane {
         secretsDeleted,
       };
     } catch (error) {
-      await fs.writeFile(this.registryFilePath, previousRegistryText, "utf8").catch(() => {
+      await writeTextFileAtomic(this.registryFilePath, previousRegistryText).catch(() => {
         // Best effort rollback only.
       });
       throw error;
@@ -414,17 +446,23 @@ export class KernelControlPlane {
     sandboxMode,
     approvalPolicy,
     model,
+    reasoningEffort,
+    serviceTier,
   }: {
     botId: string;
     sandboxMode: SandboxMode;
     approvalPolicy: ApprovalPolicy;
     model?: string | null;
+    reasoningEffort?: ReasoningEffort | null;
+    serviceTier?: ServiceTier | null;
   }): Promise<{
     bot: unknown;
     policy: {
       sandboxMode: SandboxMode;
       approvalPolicy: ApprovalPolicy;
       model: string | null;
+      reasoningEffort: ReasoningEffort | null;
+      serviceTier: ServiceTier | null;
     };
   }> {
     const previousRegistryText = await fs.readFile(this.registryFilePath, "utf8");
@@ -456,6 +494,20 @@ export class KernelControlPlane {
         delete nextProviderOptions.model;
       }
     }
+    if (reasoningEffort !== undefined) {
+      if (reasoningEffort) {
+        nextProviderOptions.reasoningEffort = reasoningEffort;
+      } else {
+        delete nextProviderOptions.reasoningEffort;
+      }
+    }
+    if (serviceTier !== undefined) {
+      if (serviceTier) {
+        nextProviderOptions.serviceTier = serviceTier;
+      } else {
+        delete nextProviderOptions.serviceTier;
+      }
+    }
 
     const nextProvider = {
       ...currentProvider,
@@ -485,6 +537,12 @@ export class KernelControlPlane {
       if (model !== undefined) {
         runtimeProviderUpdate.model = model;
       }
+      if (reasoningEffort !== undefined) {
+        runtimeProviderUpdate.reasoningEffort = reasoningEffort;
+      }
+      if (serviceTier !== undefined) {
+        runtimeProviderUpdate.serviceTier = serviceTier;
+      }
 
       const bot = await this.botManager.setBotProviderOptions(botId, runtimeProviderUpdate);
       return {
@@ -493,10 +551,12 @@ export class KernelControlPlane {
           sandboxMode,
           approvalPolicy,
           model: normalizeModelFromOptions(nextProviderOptions.model),
+          reasoningEffort: normalizeReasoningEffortFromOptions(nextProviderOptions.reasoningEffort),
+          serviceTier: normalizeServiceTierFromOptions(nextProviderOptions.serviceTier),
         },
       };
     } catch (error) {
-      await fs.writeFile(this.registryFilePath, previousRegistryText, "utf8").catch(() => {
+      await writeTextFileAtomic(this.registryFilePath, previousRegistryText).catch(() => {
         // Best effort rollback only.
       });
       throw error;
@@ -613,7 +673,7 @@ export class KernelControlPlane {
         scaffold,
       };
     } catch (error) {
-      await fs.writeFile(this.registryFilePath, previousRegistryText, "utf8").catch(() => {
+      await writeTextFileAtomic(this.registryFilePath, previousRegistryText).catch(() => {
         // Best effort rollback only.
       });
       try {
@@ -664,7 +724,25 @@ export class KernelControlPlane {
   }
 
   async #writeRegistry(value: RegistryJson): Promise<void> {
-    await fs.writeFile(this.registryFilePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+    await writeTextFileAtomic(this.registryFilePath, `${JSON.stringify(value, null, 2)}\n`);
+  }
+
+  async #withRegistryMutationLock<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this.registryMutationTail;
+    let release!: () => void;
+    this.registryMutationTail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    await previous.catch(() => {
+      // Preserve queue progress even if the previous mutation failed.
+    });
+
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
   }
 }
 
@@ -782,9 +860,82 @@ function requireOptionalModel(value: unknown): string | null {
   return normalized;
 }
 
+function requireOptionalReasoningEffort(value: unknown): ReasoningEffort | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  const normalized = String(value).trim().toLowerCase();
+  if (!normalized || normalized === "auto" || normalized === "default") {
+    return null;
+  }
+
+  if (
+    normalized === "none" ||
+    normalized === "minimal" ||
+    normalized === "low" ||
+    normalized === "medium" ||
+    normalized === "high" ||
+    normalized === "xhigh"
+  ) {
+    return normalized;
+  }
+
+  throw new Error("reasoningEffort must be one of: none, minimal, low, medium, high, xhigh.");
+}
+
+function requireOptionalServiceTier(value: unknown): ServiceTier | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  const normalized = String(value).trim().toLowerCase();
+  if (
+    !normalized ||
+    normalized === "auto" ||
+    normalized === "default" ||
+    normalized === "standard"
+  ) {
+    return null;
+  }
+
+  if (normalized === "fast" || normalized === "flex") {
+    return normalized;
+  }
+
+  throw new Error("serviceTier must be one of: fast, flex.");
+}
+
 function normalizeModelFromOptions(value: unknown): string | null {
   const normalized = String(value ?? "").trim();
   return normalized || null;
+}
+
+function normalizeReasoningEffortFromOptions(value: unknown): ReasoningEffort | null {
+  const normalized = String(value ?? "")
+    .trim()
+    .toLowerCase();
+  if (
+    normalized === "none" ||
+    normalized === "minimal" ||
+    normalized === "low" ||
+    normalized === "medium" ||
+    normalized === "high" ||
+    normalized === "xhigh"
+  ) {
+    return normalized;
+  }
+  return null;
+}
+
+function normalizeServiceTierFromOptions(value: unknown): ServiceTier | null {
+  const normalized = String(value ?? "")
+    .trim()
+    .toLowerCase();
+  if (normalized === "fast" || normalized === "flex") {
+    return normalized;
+  }
+  return null;
 }
 
 function collectChannelTokenSecretRefs(agent: unknown): string[] {
@@ -805,4 +956,11 @@ function collectChannelTokenSecretRefs(agent: unknown): string[] {
 function sanitizeError(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error);
   return raw.split(/\r?\n/).slice(0, 12).join("\n");
+}
+
+async function writeTextFileAtomic(filePath: string, text: string): Promise<void> {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  const tmpPath = `${filePath}.tmp`;
+  await fs.writeFile(tmpPath, text, "utf8");
+  await fs.rename(tmpPath, filePath);
 }

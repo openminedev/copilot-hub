@@ -74,8 +74,20 @@ test("resolveModelSelectionFromAction resolves auto and keyed entries", async ()
   const { resolveModelSelectionFromAction } = await loadUtils();
   const session = {
     modelOptions: [
-      { key: "k0", model: "gpt-5", label: "GPT-5" },
-      { key: "k1", model: "gpt-4.1", label: "GPT-4.1" },
+      {
+        key: "k0",
+        model: "gpt-5",
+        label: "GPT-5",
+        supportedReasoningEfforts: [],
+        defaultReasoningEffort: null,
+      },
+      {
+        key: "k1",
+        model: "gpt-4.1",
+        label: "GPT-4.1",
+        supportedReasoningEfforts: [],
+        defaultReasoningEffort: null,
+      },
     ],
   };
 
@@ -93,7 +105,14 @@ test("fetchCodexModelOptions normalizes model catalog from API", async () => {
   const { fetchCodexModelOptions } = await loadUtils();
   const result = await fetchCodexModelOptions(async () => ({
     models: [
-      { id: "model-a", model: "gpt-5", displayName: "GPT-5", isDefault: true },
+      {
+        id: "model-a",
+        model: "gpt-5",
+        displayName: "GPT-5",
+        isDefault: true,
+        supportedReasoningEfforts: [{ reasoningEffort: "high", description: "Deep reasoning" }],
+        defaultReasoningEffort: "medium",
+      },
       { id: "model-b", model: "gpt-5", displayName: "Duplicate" },
       { id: "model-c", model: "gpt-4.1", displayName: "GPT-4.1" },
     ],
@@ -104,25 +123,40 @@ test("fetchCodexModelOptions normalizes model catalog from API", async () => {
   assert.deepEqual(result.models[0], {
     model: "gpt-5",
     displayName: "GPT-5",
+    description: "",
     isDefault: true,
+    supportedReasoningEfforts: [{ reasoningEffort: "high", description: "Deep reasoning" }],
+    defaultReasoningEffort: "medium",
   });
 });
 
-test("policy resolvers keep safe defaults", async () => {
+test("provider helpers normalize selections and preserve policy defaults", async () => {
   const {
-    applyBotModelPolicy,
-    applyModelPolicyToBots,
-    applyRuntimeModelPolicy,
-    getRuntimeModel,
+    applyBotProviderPolicy,
+    applyProviderPolicyToBots,
+    applyRuntimeProviderPolicy,
+    buildReasoningOptionsForModel,
+    formatFastModeLabel,
+    formatReasoningLabel,
     getBotPolicyState,
+    getBotProviderSelection,
+    getRuntimeProviderSelection,
     resolveSharedModel,
+    resolveSharedReasoningEffort,
+    resolveSharedServiceTier,
+    resolveReasoningSelectionFromAction,
     resolveApprovalPolicy,
     resolveSandboxMode,
   } = await loadUtils();
+
   assert.equal(resolveSandboxMode("read-only"), "read-only");
   assert.equal(resolveSandboxMode("invalid"), "danger-full-access");
   assert.equal(resolveApprovalPolicy("on-request"), "on-request");
   assert.equal(resolveApprovalPolicy("invalid"), "never");
+  assert.equal(formatReasoningLabel("xhigh"), "Extra High");
+  assert.equal(formatFastModeLabel("fast"), "Fast");
+  assert.equal(formatFastModeLabel("flex"), "Flex (manual)");
+  assert.equal(formatFastModeLabel(null), "Standard");
 
   assert.deepEqual(
     getBotPolicyState({
@@ -139,9 +173,26 @@ test("policy resolvers keep safe defaults", async () => {
     },
   );
 
+  assert.deepEqual(
+    getBotProviderSelection({
+      provider: {
+        options: {
+          model: "gpt-5.4",
+          reasoningEffort: "high",
+          serviceTier: "fast",
+        },
+      },
+    }),
+    {
+      model: "gpt-5.4",
+      reasoningEffort: "high",
+      serviceTier: "fast",
+    },
+  );
+
   let capturedPath = "";
   let capturedPayload: unknown = null;
-  await applyBotModelPolicy({
+  await applyBotProviderPolicy({
     apiPost: async (path: string, payload: unknown) => {
       capturedPath = path;
       capturedPayload = payload;
@@ -156,17 +207,23 @@ test("policy resolvers keep safe defaults", async () => {
         },
       },
     },
-    model: "gpt-5",
+    patch: {
+      model: "gpt-5",
+      reasoningEffort: "medium",
+      serviceTier: "fast",
+    },
   });
   assert.equal(capturedPath, "/api/bots/worker-a/policy");
   assert.deepEqual(capturedPayload, {
     sandboxMode: "read-only",
     approvalPolicy: "on-request",
     model: "gpt-5",
+    reasoningEffort: "medium",
+    serviceTier: "fast",
   });
 
   const posted: Array<{ path: string; payload: unknown }> = [];
-  const batchResult = await applyModelPolicyToBots({
+  const batchResult = await applyProviderPolicyToBots({
     apiPost: async (path: string, payload: unknown) => {
       posted.push({ path, payload });
       if (path.endsWith("/worker-b/policy")) {
@@ -194,33 +251,48 @@ test("policy resolvers keep safe defaults", async () => {
         },
       },
     ],
-    model: null,
+    patch: {
+      model: null,
+      reasoningEffort: null,
+    },
   });
   assert.deepEqual(batchResult.updatedBotIds, ["worker-a"]);
   assert.equal(batchResult.failures.length, 1);
   assert.equal(batchResult.failures[0].botId, "worker-b");
   assert.equal(posted.length, 2);
 
-  assert.equal(
-    getRuntimeModel({
+  assert.deepEqual(
+    getRuntimeProviderSelection({
       getProviderOptions: () => ({
         model: "gpt-5",
+        reasoningEffort: "xhigh",
+        serviceTier: "fast",
       }),
     }),
-    "gpt-5",
+    {
+      model: "gpt-5",
+      reasoningEffort: "xhigh",
+      serviceTier: "fast",
+    },
   );
 
   let runtimePayload: unknown = null;
-  await applyRuntimeModelPolicy({
+  await applyRuntimeProviderPolicy({
     runtime: {
       setProviderOptions: async (payload: Record<string, unknown>) => {
         runtimePayload = payload;
       },
     },
-    model: null,
+    patch: {
+      model: null,
+      reasoningEffort: "low",
+      serviceTier: null,
+    },
   });
   assert.deepEqual(runtimePayload, {
     model: null,
+    reasoningEffort: "low",
+    serviceTier: null,
   });
 
   assert.deepEqual(resolveSharedModel(["gpt-5", "gpt-5", "gpt-5"]), {
@@ -230,4 +302,43 @@ test("policy resolvers keep safe defaults", async () => {
   assert.deepEqual(resolveSharedModel(["gpt-5", null]), {
     mode: "mixed",
   });
+  assert.deepEqual(resolveSharedReasoningEffort(["high", "high"]), {
+    mode: "uniform",
+    reasoningEffort: "high",
+  });
+  assert.deepEqual(resolveSharedReasoningEffort(["high", null]), {
+    mode: "mixed",
+  });
+  assert.deepEqual(resolveSharedServiceTier(["fast", "fast"]), {
+    mode: "uniform",
+    serviceTier: "fast",
+  });
+  assert.deepEqual(resolveSharedServiceTier(["fast", null]), {
+    mode: "mixed",
+  });
+
+  const reasoningOptions = buildReasoningOptionsForModel({
+    modelSelection: {
+      ok: true,
+      key: "k0",
+      model: "gpt-5.4",
+      label: "GPT-5.4",
+      supportedReasoningEfforts: [
+        { reasoningEffort: "low", description: "Fast responses" },
+        { reasoningEffort: "xhigh", description: "Deepest reasoning" },
+      ],
+      defaultReasoningEffort: "medium",
+    },
+    currentModel: "gpt-5.4",
+    currentReasoningEffort: "xhigh",
+  });
+  assert.equal(reasoningOptions.length, 3);
+  assert.equal(reasoningOptions[2].selected, true);
+
+  const reasoningSelection = resolveReasoningSelectionFromAction({
+    options: reasoningOptions,
+    profileId: reasoningOptions[1].key,
+  });
+  assert.equal(reasoningSelection.ok, true);
+  assert.equal(reasoningSelection.reasoningEffort, "low");
 });

@@ -227,8 +227,23 @@ function buildApiApp({
         .trim()
         .toLowerCase();
       const hasModel = Object.prototype.hasOwnProperty.call(req.body ?? {}, "model");
+      const hasReasoningEffort = Object.prototype.hasOwnProperty.call(
+        req.body ?? {},
+        "reasoningEffort",
+      );
+      const hasServiceTier = Object.prototype.hasOwnProperty.call(req.body ?? {}, "serviceTier");
       const rawModel = req.body?.model;
+      const rawReasoningEffort = req.body?.reasoningEffort;
+      const rawServiceTier = req.body?.serviceTier;
       const model = rawModel === null || rawModel === undefined ? null : String(rawModel).trim();
+      const reasoningEffort =
+        rawReasoningEffort === null || rawReasoningEffort === undefined
+          ? null
+          : String(rawReasoningEffort).trim().toLowerCase();
+      const serviceTier =
+        rawServiceTier === null || rawServiceTier === undefined
+          ? null
+          : String(rawServiceTier).trim().toLowerCase();
       if (!sandboxMode) {
         res.status(400).json({ error: "Field 'sandboxMode' is required." });
         return;
@@ -243,6 +258,8 @@ function buildApiApp({
         sandboxMode: string;
         approvalPolicy: string;
         model?: string | null;
+        reasoningEffort?: string | null;
+        serviceTier?: string | null;
       } = {
         botId,
         sandboxMode,
@@ -250,6 +267,12 @@ function buildApiApp({
       };
       if (hasModel) {
         payload.model = model;
+      }
+      if (hasReasoningEffort) {
+        payload.reasoningEffort = reasoningEffort;
+      }
+      if (hasServiceTier) {
+        payload.serviceTier = serviceTier;
       }
 
       const result = await controlPlane.runSystemAction(CONTROL_ACTIONS.BOTS_SET_POLICY, payload);

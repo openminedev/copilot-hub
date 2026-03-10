@@ -98,24 +98,38 @@ test("BOTS_SET_POLICY applies and clears model override", async () => {
         sandboxMode: "workspace-write",
         approvalPolicy: "on-failure",
         model: "gpt-5.3-codex",
+        reasoningEffort: "xhigh",
+        serviceTier: "fast",
       });
       assert.equal(setResult.policy.model, "gpt-5.3-codex");
+      assert.equal(setResult.policy.reasoningEffort, "xhigh");
+      assert.equal(setResult.policy.serviceTier, "fast");
       assert.equal(calls[0].options.model, "gpt-5.3-codex");
+      assert.equal(calls[0].options.reasoningEffort, "xhigh");
+      assert.equal(calls[0].options.serviceTier, "fast");
 
       const clearResult = await controlPlane.runSystemAction(CONTROL_ACTIONS.BOTS_SET_POLICY, {
         botId: "worker-b",
         sandboxMode: "workspace-write",
         approvalPolicy: "on-failure",
         model: "auto",
+        reasoningEffort: "default",
+        serviceTier: "standard",
       });
       assert.equal(clearResult.policy.model, null);
+      assert.equal(clearResult.policy.reasoningEffort, null);
+      assert.equal(clearResult.policy.serviceTier, null);
       assert.equal(calls[1].options.model, null);
+      assert.equal(calls[1].options.reasoningEffort, null);
+      assert.equal(calls[1].options.serviceTier, null);
 
       const nextRegistry = JSON.parse(await fs.readFile(registryFilePath, "utf8"));
       const options = nextRegistry.agents[0].provider.options;
       assert.equal(options.sandboxMode, "workspace-write");
       assert.equal(options.approvalPolicy, "on-failure");
       assert.equal(Object.prototype.hasOwnProperty.call(options, "model"), false);
+      assert.equal(Object.prototype.hasOwnProperty.call(options, "reasoningEffort"), false);
+      assert.equal(Object.prototype.hasOwnProperty.call(options, "serviceTier"), false);
     },
   );
 });
@@ -156,6 +170,66 @@ test("BOTS_SET_POLICY rolls back registry if runtime update fails", async () => 
 
       const finalRegistry = JSON.parse(await fs.readFile(registryFilePath, "utf8"));
       assert.deepEqual(finalRegistry, initialRegistry);
+    },
+  );
+});
+
+test("BOTS_SET_POLICY mutations are serialized to avoid overlapping registry writes", async () => {
+  await withTempRegistry(
+    {
+      id: "worker-d",
+      provider: {
+        kind: "codex",
+        options: {
+          sandboxMode: "workspace-write",
+          approvalPolicy: "on-request",
+        },
+      },
+    },
+    async ({ registryFilePath }) => {
+      const calls = [];
+      let releaseFirstCall = null;
+      const firstCallBlocked = new Promise((resolve) => {
+        releaseFirstCall = resolve;
+      });
+
+      const controlPlane = new KernelControlPlane({
+        registryFilePath,
+        botManager: {
+          async setBotProviderOptions(botId, options) {
+            calls.push({ botId, options });
+            if (calls.length === 1) {
+              await firstCallBlocked;
+            }
+            return { id: botId, provider: { kind: "codex", options } };
+          },
+        },
+      });
+
+      const first = controlPlane.runSystemAction(CONTROL_ACTIONS.BOTS_SET_POLICY, {
+        botId: "worker-d",
+        sandboxMode: "workspace-write",
+        approvalPolicy: "on-failure",
+      });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      const second = controlPlane.runSystemAction(CONTROL_ACTIONS.BOTS_SET_POLICY, {
+        botId: "worker-d",
+        sandboxMode: "danger-full-access",
+        approvalPolicy: "never",
+      });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      assert.equal(calls.length, 1);
+      releaseFirstCall();
+
+      await Promise.all([first, second]);
+      assert.equal(calls.length, 2);
+
+      const nextRegistry = JSON.parse(await fs.readFile(registryFilePath, "utf8"));
+      const options = nextRegistry.agents[0].provider.options;
+      assert.equal(options.sandboxMode, "danger-full-access");
+      assert.equal(options.approvalPolicy, "never");
     },
   );
 });

@@ -1,3 +1,4 @@
+import { normalizeReasoningEffort, normalizeServiceTier } from "./codex-app-utils.js";
 import { CodexProvider } from "./codex-provider.js";
 
 type UnknownRecord = Record<string, unknown>;
@@ -14,6 +15,8 @@ type ProviderDefaults = {
   codexSandbox?: unknown;
   codexApprovalPolicy?: unknown;
   codexModel?: unknown;
+  codexReasoningEffort?: unknown;
+  codexServiceTier?: unknown;
 } | null;
 
 type CreateAssistantProviderParams = {
@@ -43,6 +46,10 @@ export function createAssistantProvider({
       sandboxMode: String(options.sandboxMode ?? defaults.codexSandbox ?? "danger-full-access"),
       approvalPolicy: String(options.approvalPolicy ?? defaults.codexApprovalPolicy ?? "never"),
       model: normalizeOptionalString(options.model ?? defaults.codexModel),
+      reasoningEffort: normalizeReasoningEffort(
+        options.reasoningEffort ?? defaults.codexReasoningEffort,
+      ),
+      serviceTier: normalizeServiceTier(options.serviceTier ?? defaults.codexServiceTier),
       workspaceRoot,
       ...(turnActivityTimeoutMs === undefined ? {} : { turnActivityTimeoutMs }),
     };

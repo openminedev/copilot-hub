@@ -1,11 +1,27 @@
-const MODEL_INLINE_MAX = 6;
+const MODEL_INLINE_MAX = 24;
 const MODEL_PATTERN = /^[A-Za-z0-9._:-]+$/;
 
-type ModelSelectionOption = {
+type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
+type ServiceTier = "fast" | "flex";
+
+export type ModelSelectionOption = {
   key: string;
   model: string;
   label: string;
   isDefault: boolean;
+  selected?: boolean;
+  supportedReasoningEfforts: Array<{
+    reasoningEffort: ReasoningEffort;
+    description: string;
+  }>;
+  defaultReasoningEffort: ReasoningEffort | null;
+};
+
+export type ReasoningSelectionOption = {
+  key: string;
+  reasoningEffort: ReasoningEffort | null;
+  label: string;
+  description: string;
   selected?: boolean;
 };
 
@@ -32,25 +48,52 @@ type SessionModelSelection = {
   modelOptions?: ModelSelectionOption[];
 } | null;
 
-type ModelSelectionResult =
+export type ModelSelectionResult =
   | {
       ok: false;
+      key: "";
       model: null;
+      label: "";
+      supportedReasoningEfforts: [];
+      defaultReasoningEffort: null;
+    }
+  | {
+      ok: true;
+      key: string;
+      model: string | null;
+      label: string;
+      supportedReasoningEfforts: Array<{
+        reasoningEffort: ReasoningEffort;
+        description: string;
+      }>;
+      defaultReasoningEffort: ReasoningEffort | null;
+    };
+
+export type ReasoningSelectionResult =
+  | {
+      ok: false;
+      reasoningEffort: null;
       label: "";
     }
   | {
       ok: true;
-      model: string | null;
+      reasoningEffort: ReasoningEffort | null;
       label: string;
     };
 
 type ApiGetFn = (path: string) => Promise<unknown>;
 type ApiPostFn = (path: string, payload: unknown) => Promise<unknown>;
 
-type ModelCatalogItem = {
+export type ModelCatalogItem = {
   model: string;
   displayName: string;
+  description: string;
   isDefault: boolean;
+  supportedReasoningEfforts: Array<{
+    reasoningEffort: ReasoningEffort;
+    description: string;
+  }>;
+  defaultReasoningEffort: ReasoningEffort | null;
 };
 
 type ModelCatalogResult = {
@@ -63,7 +106,19 @@ type BotPolicyState = {
   approvalPolicy: "on-request" | "on-failure" | "never";
 };
 
-type RuntimeModelControl = {
+export type ProviderSelectionState = {
+  model: string | null;
+  reasoningEffort: ReasoningEffort | null;
+  serviceTier: ServiceTier | null;
+};
+
+export type ProviderPolicyPatch = {
+  model?: string | null;
+  reasoningEffort?: ReasoningEffort | null;
+  serviceTier?: ServiceTier | null;
+};
+
+type RuntimeProviderControl = {
   getProviderOptions?: () => unknown;
   setProviderOptions?: (payload: Record<string, unknown>) => Promise<unknown>;
 } | null;
@@ -169,6 +224,32 @@ export function formatModelLabel(value: unknown): string {
   return model;
 }
 
+export function formatReasoningLabel(value: unknown): string {
+  const reasoningEffort = normalizeReasoningEffortValue(value);
+  if (!reasoningEffort) {
+    return "Default";
+  }
+  switch (reasoningEffort) {
+    case "xhigh":
+      return "Extra High";
+    case "none":
+      return "None";
+    default:
+      return reasoningEffort.charAt(0).toUpperCase() + reasoningEffort.slice(1);
+  }
+}
+
+export function formatFastModeLabel(value: unknown): string {
+  const serviceTier = normalizeServiceTierValue(value);
+  if (serviceTier === "fast") {
+    return "Fast";
+  }
+  if (serviceTier === "flex") {
+    return "Flex (manual)";
+  }
+  return "Standard";
+}
+
 export function formatModelButtonText(label: unknown, selected: boolean): string {
   const text = String(label ?? "").trim() || "Model";
   return selected ? `* ${text}` : text;
@@ -208,6 +289,8 @@ export function buildSessionModelOptions({
       label: String(entry.displayName ?? model).trim() || model,
       isDefault: entry.isDefault === true,
       selected: normalizedCurrent === key,
+      supportedReasoningEfforts: normalizeReasoningCatalog(entry.supportedReasoningEfforts),
+      defaultReasoningEffort: normalizeReasoningEffortValue(entry.defaultReasoningEffort),
     });
   }
 
@@ -230,6 +313,63 @@ export function buildSessionModelOptions({
   }));
 }
 
+export function buildReasoningOptionsForModel({
+  modelSelection,
+  currentModel,
+  currentReasoningEffort,
+}: {
+  modelSelection: ModelSelectionResult;
+  currentModel?: unknown;
+  currentReasoningEffort?: unknown;
+}): ReasoningSelectionOption[] {
+  if (!modelSelection.ok || !modelSelection.model) {
+    return [
+      {
+        key: "default",
+        reasoningEffort: null,
+        label: "Default",
+        description: "Use the default reasoning level for the resolved model.",
+        selected: true,
+      },
+    ];
+  }
+
+  const selectedModel = String(modelSelection.model).trim().toLowerCase();
+  const normalizedCurrentModel = String(currentModel ?? "")
+    .trim()
+    .toLowerCase();
+  const normalizedCurrentReasoning = normalizeReasoningEffortValue(currentReasoningEffort);
+  const selectedReasoning =
+    selectedModel === normalizedCurrentModel ? normalizedCurrentReasoning : null;
+
+  const options: ReasoningSelectionOption[] = [
+    {
+      key: "default",
+      reasoningEffort: null,
+      label: "Default",
+      description:
+        modelSelection.defaultReasoningEffort !== null
+          ? `Use ${formatReasoningLabel(modelSelection.defaultReasoningEffort)} for this model.`
+          : "Use the model default reasoning level.",
+      selected: selectedReasoning === null,
+    },
+  ];
+
+  for (const entry of modelSelection.supportedReasoningEfforts) {
+    options.push({
+      key: `r${options.length - 1}`,
+      reasoningEffort: entry.reasoningEffort,
+      label: formatReasoningLabel(entry.reasoningEffort),
+      description:
+        String(entry.description ?? "").trim() ||
+        `${formatReasoningLabel(entry.reasoningEffort)} reasoning effort.`,
+      selected: selectedReasoning === entry.reasoningEffort,
+    });
+  }
+
+  return options;
+}
+
 export function resolveModelSelectionFromAction({
   session,
   profileId,
@@ -243,16 +383,22 @@ export function resolveModelSelectionFromAction({
   if (!target) {
     return {
       ok: false,
+      key: "",
       model: null,
       label: "",
+      supportedReasoningEfforts: [],
+      defaultReasoningEffort: null,
     };
   }
 
   if (target === "auto") {
     return {
       ok: true,
+      key: "auto",
       model: null,
       label: "Auto (workspace default)",
+      supportedReasoningEfforts: [],
+      defaultReasoningEffort: null,
     };
   }
 
@@ -266,15 +412,60 @@ export function resolveModelSelectionFromAction({
   if (!matched) {
     return {
       ok: false,
+      key: "",
       model: null,
+      label: "",
+      supportedReasoningEfforts: [],
+      defaultReasoningEffort: null,
+    };
+  }
+
+  return {
+    ok: true,
+    key: matched.key,
+    model: String(matched.model ?? "").trim() || null,
+    label: String(matched.label ?? matched.model ?? "custom").trim(),
+    supportedReasoningEfforts: matched.supportedReasoningEfforts,
+    defaultReasoningEffort: matched.defaultReasoningEffort,
+  };
+}
+
+export function resolveReasoningSelectionFromAction({
+  options,
+  profileId,
+}: {
+  options: ReasoningSelectionOption[];
+  profileId: unknown;
+}): ReasoningSelectionResult {
+  const target = String(profileId ?? "")
+    .trim()
+    .toLowerCase();
+  if (!target) {
+    return {
+      ok: false,
+      reasoningEffort: null,
+      label: "",
+    };
+  }
+
+  const matched = options.find(
+    (entry) =>
+      String(entry?.key ?? "")
+        .trim()
+        .toLowerCase() === target,
+  );
+  if (!matched) {
+    return {
+      ok: false,
+      reasoningEffort: null,
       label: "",
     };
   }
 
   return {
     ok: true,
-    model: String(matched.model ?? "").trim() || null,
-    label: String(matched.label ?? matched.model ?? "custom").trim(),
+    reasoningEffort: matched.reasoningEffort,
+    label: matched.label,
   };
 }
 
@@ -300,7 +491,10 @@ export async function fetchCodexModelOptions(apiGet: ApiGetFn): Promise<ModelCat
       models.push({
         model,
         displayName: String(entry.displayName ?? model).trim() || model,
+        description: String(entry.description ?? "").trim(),
         isDefault: entry.isDefault === true,
+        supportedReasoningEfforts: normalizeReasoningCatalog(entry.supportedReasoningEfforts),
+        defaultReasoningEffort: normalizeReasoningEffortValue(entry.defaultReasoningEffort),
       });
     }
 
@@ -338,10 +532,6 @@ export function resolveApprovalPolicy(value: unknown): "on-request" | "on-failur
   return "never";
 }
 
-function isObject(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object";
-}
-
 export function getBotPolicyState(botState: unknown): BotPolicyState {
   const provider = isObject(botState) && isObject(botState.provider) ? botState.provider : null;
   const options = provider && isObject(provider.options) ? provider.options : {};
@@ -351,51 +541,89 @@ export function getBotPolicyState(botState: unknown): BotPolicyState {
   };
 }
 
-export async function applyBotModelPolicy({
+export function getBotProviderSelection(botState: unknown): ProviderSelectionState {
+  const provider = isObject(botState) && isObject(botState.provider) ? botState.provider : null;
+  const options = provider && isObject(provider.options) ? provider.options : {};
+  return {
+    model: normalizeModelValue(options.model),
+    reasoningEffort: normalizeReasoningEffortValue(options.reasoningEffort),
+    serviceTier: normalizeServiceTierValue(options.serviceTier),
+  };
+}
+
+export function getRuntimeProviderSelection(
+  runtime: RuntimeProviderControl | undefined,
+): ProviderSelectionState {
+  if (!runtime || typeof runtime.getProviderOptions !== "function") {
+    return {
+      model: null,
+      reasoningEffort: null,
+      serviceTier: null,
+    };
+  }
+
+  const options = runtime.getProviderOptions();
+  const record = isObject(options) ? options : {};
+  return {
+    model: normalizeModelValue(record.model),
+    reasoningEffort: normalizeReasoningEffortValue(record.reasoningEffort),
+    serviceTier: normalizeServiceTierValue(record.serviceTier),
+  };
+}
+
+export async function applyBotProviderPolicy({
   apiPost,
   botId,
   botState,
-  model,
+  patch,
 }: {
   apiPost: ApiPostFn;
   botId: string;
   botState: unknown;
-  model: string | null;
+  patch: ProviderPolicyPatch;
 }): Promise<unknown> {
   const policyState = getBotPolicyState(botState);
-  return apiPost(`/api/bots/${encodeURIComponent(botId)}/policy`, {
+  const payload: Record<string, unknown> = {
     sandboxMode: policyState.sandboxMode,
     approvalPolicy: policyState.approvalPolicy,
-    model,
-  });
-}
+  };
 
-export function getRuntimeModel(runtime: RuntimeModelControl | undefined): string | null {
-  if (!runtime || typeof runtime.getProviderOptions !== "function") {
-    return null;
+  if (Object.prototype.hasOwnProperty.call(patch, "model")) {
+    payload.model = patch.model ?? null;
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, "reasoningEffort")) {
+    payload.reasoningEffort = patch.reasoningEffort ?? null;
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, "serviceTier")) {
+    payload.serviceTier = patch.serviceTier ?? null;
   }
 
-  const options = runtime.getProviderOptions();
-  if (!isObject(options)) {
-    return null;
-  }
-
-  const model = String(options.model ?? "").trim();
-  return model || null;
+  return apiPost(`/api/bots/${encodeURIComponent(botId)}/policy`, payload);
 }
 
-export async function applyRuntimeModelPolicy({
+export async function applyRuntimeProviderPolicy({
   runtime,
-  model,
+  patch,
 }: {
-  runtime: RuntimeModelControl | undefined;
-  model: string | null;
+  runtime: RuntimeProviderControl | undefined;
+  patch: ProviderPolicyPatch;
 }): Promise<void> {
   if (!runtime || typeof runtime.setProviderOptions !== "function") {
-    throw new Error("Hub model update is not available on this runtime.");
+    throw new Error("Hub provider update is not available on this runtime.");
   }
 
-  await runtime.setProviderOptions({ model });
+  const payload: Record<string, unknown> = {};
+  if (Object.prototype.hasOwnProperty.call(patch, "model")) {
+    payload.model = patch.model ?? null;
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, "reasoningEffort")) {
+    payload.reasoningEffort = patch.reasoningEffort ?? null;
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, "serviceTier")) {
+    payload.serviceTier = patch.serviceTier ?? null;
+  }
+
+  await runtime.setProviderOptions(payload);
 }
 
 export function resolveSharedModel(
@@ -404,7 +632,7 @@ export function resolveSharedModel(
   let normalizedModel: string | null | undefined;
 
   for (const entry of Array.isArray(models) ? models : []) {
-    const nextModel = String(entry ?? "").trim() || null;
+    const nextModel = normalizeModelValue(entry);
     if (normalizedModel === undefined) {
       normalizedModel = nextModel;
       continue;
@@ -420,14 +648,58 @@ export function resolveSharedModel(
   };
 }
 
-export async function applyModelPolicyToBots({
+export function resolveSharedReasoningEffort(
+  values: unknown,
+): { mode: "uniform"; reasoningEffort: ReasoningEffort | null } | { mode: "mixed" } {
+  let normalizedValue: ReasoningEffort | null | undefined;
+
+  for (const entry of Array.isArray(values) ? values : []) {
+    const nextValue = normalizeReasoningEffortValue(entry);
+    if (normalizedValue === undefined) {
+      normalizedValue = nextValue;
+      continue;
+    }
+    if (normalizedValue !== nextValue) {
+      return { mode: "mixed" };
+    }
+  }
+
+  return {
+    mode: "uniform",
+    reasoningEffort: normalizedValue ?? null,
+  };
+}
+
+export function resolveSharedServiceTier(
+  values: unknown,
+): { mode: "uniform"; serviceTier: ServiceTier | null } | { mode: "mixed" } {
+  let normalizedValue: ServiceTier | null | undefined;
+
+  for (const entry of Array.isArray(values) ? values : []) {
+    const nextValue = normalizeServiceTierValue(entry);
+    if (normalizedValue === undefined) {
+      normalizedValue = nextValue;
+      continue;
+    }
+    if (normalizedValue !== nextValue) {
+      return { mode: "mixed" };
+    }
+  }
+
+  return {
+    mode: "uniform",
+    serviceTier: normalizedValue ?? null,
+  };
+}
+
+export async function applyProviderPolicyToBots({
   apiPost,
   bots,
-  model,
+  patch,
 }: {
   apiPost: ApiPostFn;
-  bots: Array<{ id?: string; provider?: { options?: Record<string, unknown> } | null }>;
-  model: string | null;
+  bots: Array<{ id?: string }>;
+  patch: ProviderPolicyPatch;
 }): Promise<{
   updatedBotIds: string[];
   failures: Array<{ botId: string; error: string }>;
@@ -442,11 +714,11 @@ export async function applyModelPolicyToBots({
     }
 
     try {
-      await applyBotModelPolicy({
+      await applyBotProviderPolicy({
         apiPost,
         botId,
         botState,
-        model,
+        patch,
       });
       updatedBotIds.push(botId);
     } catch (error) {
@@ -461,6 +733,70 @@ export async function applyModelPolicyToBots({
     updatedBotIds,
     failures,
   };
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object";
+}
+
+function normalizeModelValue(value: unknown): string | null {
+  const normalized = String(value ?? "").trim();
+  return normalized || null;
+}
+
+function normalizeReasoningCatalog(value: unknown): Array<{
+  reasoningEffort: ReasoningEffort;
+  description: string;
+}> {
+  const options: Array<{
+    reasoningEffort: ReasoningEffort;
+    description: string;
+  }> = [];
+  const seen = new Set<string>();
+
+  for (const entry of Array.isArray(value) ? value : []) {
+    const option = isObject(entry) ? entry : {};
+    const reasoningEffort = normalizeReasoningEffortValue(
+      option.reasoningEffort ?? option.effort ?? option.id,
+    );
+    if (!reasoningEffort || seen.has(reasoningEffort)) {
+      continue;
+    }
+    seen.add(reasoningEffort);
+    options.push({
+      reasoningEffort,
+      description: String(option.description ?? "").trim(),
+    });
+  }
+
+  return options;
+}
+
+function normalizeReasoningEffortValue(value: unknown): ReasoningEffort | null {
+  const normalized = String(value ?? "")
+    .trim()
+    .toLowerCase();
+  if (
+    normalized === "none" ||
+    normalized === "minimal" ||
+    normalized === "low" ||
+    normalized === "medium" ||
+    normalized === "high" ||
+    normalized === "xhigh"
+  ) {
+    return normalized;
+  }
+  return null;
+}
+
+function normalizeServiceTierValue(value: unknown): ServiceTier | null {
+  const normalized = String(value ?? "")
+    .trim()
+    .toLowerCase();
+  if (normalized === "fast" || normalized === "flex") {
+    return normalized;
+  }
+  return null;
 }
 
 function sanitizeError(error: unknown): string {

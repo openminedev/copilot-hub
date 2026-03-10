@@ -54,6 +54,10 @@ type WorkerStatusBase = {
   telegramError: string | null;
   workspaceRoot: string;
   dataDir: string;
+  provider: {
+    kind: string;
+    options: Record<string, unknown>;
+  };
   kernelAccess: {
     enabled: boolean;
     allowedActions: string[];
@@ -479,6 +483,12 @@ export class AgentSupervisor {
     this.#setOfflineStatus();
   }
 
+  recordStartupFailure(error: unknown): void {
+    this.lastHeartbeatAt = new Date().toISOString();
+    this.lastHeartbeatError = sanitizeError(error);
+    this.#setOfflineStatus();
+  }
+
   request(
     action: string,
     payload: unknown = null,
@@ -740,6 +750,7 @@ export class AgentSupervisor {
     };
     if (this.statusCache.running) {
       this.restartAttempt = 0;
+      this.lastHeartbeatError = null;
     }
   }
 
@@ -773,6 +784,7 @@ async function waitForWorkerReady(supervisor: AgentSupervisor, child: ChildProce
 
 function createInitialStatus(botConfig: BotConfig): WorkerStatusBase {
   const provider = asRecord(botConfig.provider);
+  const providerOptions = mergeProviderOptions({}, provider.options);
   const kernelAccess = asRecord(botConfig.kernelAccess);
   return {
     id: String(botConfig.id),
@@ -789,6 +801,10 @@ function createInitialStatus(botConfig: BotConfig): WorkerStatusBase {
     telegramError: null,
     workspaceRoot: String(botConfig.workspaceRoot),
     dataDir: String(botConfig.dataDir),
+    provider: {
+      kind: String(provider.kind ?? "codex"),
+      options: providerOptions,
+    },
     kernelAccess: {
       enabled: kernelAccess.enabled === true,
       allowedActions: normalizeStringList(kernelAccess.allowedActions),

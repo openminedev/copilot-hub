@@ -50,6 +50,8 @@ test("setProviderOptions updates a live worker without forceRestart", async () =
 
   const status = await supervisor.setProviderOptions({
     model: "gpt-5.4",
+    reasoningEffort: "high",
+    serviceTier: "fast",
     approvalPolicy: "on-failure",
   });
 
@@ -60,8 +62,12 @@ test("setProviderOptions updates a live worker without forceRestart", async () =
     sandboxMode: "workspace-write",
     approvalPolicy: "on-failure",
     model: "gpt-5.4",
+    reasoningEffort: "high",
+    serviceTier: "fast",
   });
   assert.equal(supervisor.config.provider.options.model, "gpt-5.4");
+  assert.equal(supervisor.config.provider.options.reasoningEffort, "high");
+  assert.equal(supervisor.config.provider.options.serviceTier, "fast");
   assert.equal(status.running, true);
   assert.equal(status.telegramRunning, true);
 });

@@ -1,6 +1,6 @@
 {
   "name": "copilot-hub",
-  "version": "0.1.20",
+  "version": "0.1.21",
   "description": "Copilot Hub CLI and runtime bundle",
   "license": "MIT",
   "repository": {
@@ -59,7 +59,8 @@
     "logs": "npm run build:scripts --silent && node scripts/dist/cli.mjs logs",
     "configure": "npm run build:scripts --silent && node scripts/dist/cli.mjs configure",
     "update": "npm run build:scripts --silent && node scripts/dist/cli.mjs update",
-    "test": "npm run test --workspaces --if-present",
+    "test:scripts": "npm run build:scripts --silent && node --test scripts/test/*.test.mjs",
+    "test": "npm run test:scripts && npm run test --workspaces --if-present",
     "lint": "eslint .",
     "format": "prettier --write \"{scripts,packages}/**/*.{js,mjs,mts,ts,json}\" \"apps/*/src/**/*.{js,ts}\" \"apps/*/package.json\" \"apps/*/test/**/*.{js,ts}\" \"apps/*/tsconfig*.json\" \"{README.md,CONTRIBUTING.md,ARCHITECTURE.md}\" \"eslint.config.mjs\" \"package.json\" \"tsconfig.base.json\"",
     "format:check": "prettier --check \"{scripts,packages}/**/*.{js,mjs,mts,ts,json}\" \"apps/*/src/**/*.{js,ts}\" \"apps/*/package.json\" \"apps/*/test/**/*.{js,ts}\" \"apps/*/tsconfig*.json\" \"{README.md,CONTRIBUTING.md,ARCHITECTURE.md}\" \"eslint.config.mjs\" \"package.json\" \"tsconfig.base.json\"",

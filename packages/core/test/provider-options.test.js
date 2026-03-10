@@ -37,3 +37,21 @@ test("mergeProviderOptions clears model on auto-like values", () => {
   assert.equal(Object.prototype.hasOwnProperty.call(merged, "model"), false);
   assert.equal(merged.sandboxMode, "workspace-write");
 });
+
+test("mergeProviderOptions normalizes reasoning effort and service tier", () => {
+  const merged = mergeProviderOptions(
+    {
+      model: "gpt-5.4",
+      reasoningEffort: "high",
+      serviceTier: "fast",
+    },
+    {
+      reasoningEffort: " default ",
+      serviceTier: "standard",
+    },
+  );
+
+  assert.equal(Object.prototype.hasOwnProperty.call(merged, "reasoningEffort"), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(merged, "serviceTier"), false);
+  assert.equal(merged.model, "gpt-5.4");
+});

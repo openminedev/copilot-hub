@@ -82,6 +82,7 @@ copilot-hub start
 
 `start` runs guided setup automatically if required values are missing.
 On interactive terminals, `start` can also offer OS-native service installation when it is not yet configured.
+`start` and `update` also verify the supported Codex CLI range and can install the validated version automatically when needed.
 
 ## Quick start from source
 
@@ -165,9 +166,9 @@ Default values are already applied, and actions start from that agent workspace 
 ## Startup troubleshooting
 
 - If `npm run start` fails, first read the error and follow the suggested action.
-- `npm run start` now auto-detects Codex from VS Code (Windows) and can install Codex CLI automatically if missing.
+- `npm run start` now checks that Codex CLI is inside the supported range and can install the validated version automatically if missing or outside that range.
 - For Codex login issues, run `codex login` (or the configured `CODEX_BIN`) and retry `npm run start`.
-- If auto-install is skipped or unavailable, install Codex CLI with `npm install -g @openai/codex` or set `CODEX_BIN` in `.env`.
+- If auto-install is skipped or unavailable, install Codex CLI with `npm install -g @openai/codex@0.113.0` or set `CODEX_BIN` in `.env` to a binary in the supported `0.113.x` range.
 - If you are still stuck, ask your favorite LLM with the exact error output.
 
 ## Commands

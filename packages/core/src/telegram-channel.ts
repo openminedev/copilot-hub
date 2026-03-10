@@ -91,6 +91,10 @@ type CodexUsageSnapshot = {
 const CODEX_USAGE_CACHE_TTL_MS = 60_000;
 let cachedCodexUsage: { expiresAt: number; snapshot: CodexUsageSnapshot } | null = null;
 
+export function invalidateCodexQuotaUsageCache(): void {
+  cachedCodexUsage = null;
+}
+
 export class TelegramChannel {
   kind: "telegram";
   id: string;

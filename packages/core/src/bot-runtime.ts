@@ -190,6 +190,10 @@ type BotRuntimeStatus = {
   telegramError: string | null;
   workspaceRoot: string;
   dataDir: string;
+  provider: {
+    kind: string;
+    options: Record<string, unknown>;
+  };
   kernelAccess: {
     enabled: boolean;
     allowedActions: string[];
@@ -566,6 +570,10 @@ export class BotRuntime {
       telegramError: this.telegramError,
       workspaceRoot: this.projectRoot,
       dataDir: this.config.dataDir,
+      provider: {
+        kind: this.providerKind,
+        options: this.getProviderOptions(),
+      },
       kernelAccess: {
         enabled: this.config.kernelAccess?.enabled === true,
         allowedActions: Array.isArray(this.config.kernelAccess?.allowedActions)
@@ -807,7 +815,7 @@ function normalizeThreadMode(value: unknown): "single" | "per_chat" {
 
 function normalizeProviderConfig(value: unknown): RuntimeConfig["provider"] {
   const raw = asRecord(value);
-  const options = asRecord(raw.options);
+  const options = mergeProviderOptions({}, raw.options);
   return {
     kind: String(raw.kind ?? "codex").trim() || "codex",
     options,

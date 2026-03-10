@@ -1,3 +1,9 @@
+import {
+  normalizeModel,
+  normalizeReasoningEffort,
+  normalizeServiceTier,
+} from "./codex-app-utils.js";
+
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 }
@@ -12,11 +18,31 @@ export function mergeProviderOptions(
 
   for (const [key, rawValue] of Object.entries(asRecord(nextOptions))) {
     if (key === "model") {
-      const normalizedModel = normalizeModel(rawValue);
-      if (normalizedModel) {
-        merged.model = normalizedModel;
+      const normalizedValue = normalizeModel(rawValue);
+      if (normalizedValue) {
+        merged.model = normalizedValue;
       } else {
         delete merged.model;
+      }
+      continue;
+    }
+
+    if (key === "reasoningEffort") {
+      const normalizedValue = normalizeReasoningEffort(rawValue);
+      if (normalizedValue) {
+        merged.reasoningEffort = normalizedValue;
+      } else {
+        delete merged.reasoningEffort;
+      }
+      continue;
+    }
+
+    if (key === "serviceTier") {
+      const normalizedValue = normalizeServiceTier(rawValue);
+      if (normalizedValue) {
+        merged.serviceTier = normalizedValue;
+      } else {
+        delete merged.serviceTier;
       }
       continue;
     }
@@ -36,22 +62,4 @@ export function mergeProviderOptions(
   }
 
   return merged;
-}
-
-function normalizeModel(value: unknown): string | null {
-  if (value === null || value === undefined) {
-    return null;
-  }
-
-  const normalized = String(value).trim();
-  if (!normalized) {
-    return null;
-  }
-
-  const keyword = normalized.toLowerCase();
-  if (keyword === "auto" || keyword === "default") {
-    return null;
-  }
-
-  return normalized;
 }

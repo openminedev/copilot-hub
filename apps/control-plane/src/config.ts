@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import dotenv from "dotenv";
 import { parseTurnActivityTimeoutSetting } from "@copilot-hub/core/codex-app-utils";
 import {
@@ -188,6 +189,10 @@ function resolveCodexBin(rawValue: string | undefined): string {
   }
 
   if (process.platform === "win32") {
+    const npmGlobalCodex = findWindowsNpmGlobalCodexBin();
+    if (npmGlobalCodex) {
+      return npmGlobalCodex;
+    }
     const vscodeCodex = findVscodeCodexExe();
     if (vscodeCodex) {
       return vscodeCodex;
@@ -224,6 +229,68 @@ function findVscodeCodexExe(): string | null {
   }
 
   return null;
+}
+
+function findWindowsNpmGlobalCodexBin(): string | null {
+  if (process.platform !== "win32") {
+    return null;
+  }
+
+  const candidates: string[] = [];
+  const appData = String(process.env.APPDATA ?? "").trim();
+  if (appData) {
+    candidates.push(path.join(appData, "npm", "codex.cmd"));
+    candidates.push(path.join(appData, "npm", "codex.exe"));
+    candidates.push(path.join(appData, "npm", "codex"));
+  }
+
+  const npmPrefix = readNpmPrefix();
+  if (npmPrefix) {
+    candidates.push(path.join(npmPrefix, "codex.cmd"));
+    candidates.push(path.join(npmPrefix, "codex.exe"));
+    candidates.push(path.join(npmPrefix, "codex"));
+  }
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+function readNpmPrefix(): string {
+  const result = spawnNpm(["config", "get", "prefix"]);
+  if (result.error || result.status !== 0) {
+    return "";
+  }
+
+  const value = String(result.stdout ?? "").trim();
+  if (!value || value.toLowerCase() === "undefined") {
+    return "";
+  }
+  return value;
+}
+
+function spawnNpm(args: string[]) {
+  if (process.platform === "win32") {
+    const comspec = process.env.ComSpec || "cmd.exe";
+    const commandLine = ["npm", ...args].join(" ");
+    return spawnSync(comspec, ["/d", "/s", "/c", commandLine], {
+      cwd: process.cwd(),
+      stdio: ["ignore", "pipe", "pipe"],
+      shell: false,
+      encoding: "utf8",
+    });
+  }
+
+  return spawnSync("npm", args, {
+    cwd: process.cwd(),
+    stdio: ["ignore", "pipe", "pipe"],
+    shell: false,
+    encoding: "utf8",
+  });
 }
 
 function normalizeThreadMode(value: unknown): ThreadMode {

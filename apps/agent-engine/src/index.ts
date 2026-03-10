@@ -12,7 +12,12 @@ import express, {
 } from "express";
 import { BotManager } from "@copilot-hub/core/bot-manager";
 import { CodexAppClient } from "@copilot-hub/core/codex-app-client";
+import {
+  buildShellWrappedCommandLine,
+  requiresShellWrappedSpawn,
+} from "@copilot-hub/core/codex-app-utils";
 import { loadBotRegistry } from "@copilot-hub/core/bot-registry";
+import { invalidateCodexQuotaUsageCache } from "@copilot-hub/core/telegram-channel";
 import { config } from "./config.js";
 import { InstanceLock } from "@copilot-hub/core/instance-lock";
 import { KernelControlPlane } from "@copilot-hub/core/kernel-control-plane";
@@ -58,6 +63,11 @@ type ModelCatalogEntry = {
   displayName: string;
   description: string;
   isDefault: boolean;
+  supportedReasoningEfforts: Array<{
+    reasoningEffort: string;
+    description: string;
+  }>;
+  defaultReasoningEffort: string | null;
 };
 
 let shuttingDown = false;
@@ -318,6 +328,7 @@ function buildApiApp({
       const refreshed = await refreshRunningBotProviders({
         botManager: requireBotManager(),
       });
+      invalidateCodexQuotaUsageCache();
       res.json({
         ok: true,
         switched: true,
@@ -404,8 +415,23 @@ function buildApiApp({
         .trim()
         .toLowerCase();
       const hasModel = Object.prototype.hasOwnProperty.call(req.body ?? {}, "model");
+      const hasReasoningEffort = Object.prototype.hasOwnProperty.call(
+        req.body ?? {},
+        "reasoningEffort",
+      );
+      const hasServiceTier = Object.prototype.hasOwnProperty.call(req.body ?? {}, "serviceTier");
       const rawModel = req.body?.model;
+      const rawReasoningEffort = req.body?.reasoningEffort;
+      const rawServiceTier = req.body?.serviceTier;
       const model = rawModel === null || rawModel === undefined ? null : String(rawModel).trim();
+      const reasoningEffort =
+        rawReasoningEffort === null || rawReasoningEffort === undefined
+          ? null
+          : String(rawReasoningEffort).trim().toLowerCase();
+      const serviceTier =
+        rawServiceTier === null || rawServiceTier === undefined
+          ? null
+          : String(rawServiceTier).trim().toLowerCase();
       if (!sandboxMode) {
         res.status(400).json({ error: "Field 'sandboxMode' is required." });
         return;
@@ -420,6 +446,8 @@ function buildApiApp({
         sandboxMode: string;
         approvalPolicy: string;
         model?: string | null;
+        reasoningEffort?: string | null;
+        serviceTier?: string | null;
       } = {
         botId,
         sandboxMode,
@@ -427,6 +455,12 @@ function buildApiApp({
       };
       if (hasModel) {
         payload.model = model;
+      }
+      if (hasReasoningEffort) {
+        payload.reasoningEffort = reasoningEffort;
+      }
+      if (hasServiceTier) {
+        payload.serviceTier = serviceTier;
       }
 
       const result = await controlPlane.runSystemAction(CONTROL_ACTIONS.BOTS_SET_POLICY, payload);
@@ -703,13 +737,21 @@ function startCodexDeviceAuthSession(): DeviceAuthSession {
     refreshFailures: [],
   };
 
-  const child = spawn(codexBin, ["login", "--device-auth"], {
-    cwd: config.kernelRootPath,
-    shell: false,
-    stdio: ["ignore", "pipe", "pipe"],
-    windowsHide: true,
-    env: process.env,
-  });
+  const child = requiresShellWrappedSpawn(codexBin)
+    ? spawn(buildShellWrappedCommandLine(codexBin, ["login", "--device-auth"]), {
+        cwd: config.kernelRootPath,
+        shell: true,
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
+        env: process.env,
+      })
+    : spawn(codexBin, ["login", "--device-auth"], {
+        cwd: config.kernelRootPath,
+        shell: false,
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
+        env: process.env,
+      });
   session.child = child;
   codexDeviceAuthSession = session;
 
@@ -738,6 +780,7 @@ function startCodexDeviceAuthSession(): DeviceAuthSession {
         botManager: requireBotManager(),
       })
         .then((refreshed) => {
+          invalidateCodexQuotaUsageCache();
           session.refreshedBots = refreshed.refreshedBotIds;
           session.refreshFailures = refreshed.failures;
           session.status = "succeeded";
@@ -974,6 +1017,8 @@ function normalizeModelCatalog(rawModels: unknown): ModelCatalogEntry[] {
       displayName: String(entry?.displayName ?? model).trim() || model,
       description: String(entry?.description ?? "").trim(),
       isDefault: entry?.isDefault === true,
+      supportedReasoningEfforts: normalizeReasoningCatalog(entry?.supportedReasoningEfforts),
+      defaultReasoningEffort: normalizeReasoningEffortValue(entry?.defaultReasoningEffort),
     });
   }
 
@@ -996,20 +1041,71 @@ function looksLikeCodexApiKey(value: unknown): boolean {
   return key.startsWith("sk-");
 }
 
+function normalizeReasoningCatalog(
+  value: unknown,
+): Array<{ reasoningEffort: string; description: string }> {
+  const options: Array<{ reasoningEffort: string; description: string }> = [];
+  const seen = new Set<string>();
+
+  for (const entry of Array.isArray(value) ? value : []) {
+    const option = isRecord(entry) ? entry : {};
+    const reasoningEffort = normalizeReasoningEffortValue(
+      option.reasoningEffort ?? option.effort ?? option.id,
+    );
+    if (!reasoningEffort || seen.has(reasoningEffort)) {
+      continue;
+    }
+    seen.add(reasoningEffort);
+    options.push({
+      reasoningEffort,
+      description: String(option.description ?? "").trim(),
+    });
+  }
+
+  return options;
+}
+
+function normalizeReasoningEffortValue(value: unknown): string | null {
+  const normalized = String(value ?? "")
+    .trim()
+    .toLowerCase();
+  if (
+    normalized === "none" ||
+    normalized === "minimal" ||
+    normalized === "low" ||
+    normalized === "medium" ||
+    normalized === "high" ||
+    normalized === "xhigh"
+  ) {
+    return normalized;
+  }
+  return null;
+}
+
 function runCodexCommand(
   args: string[],
   { inputText = "" }: { inputText?: string } = {},
 ): RunCodexCommandResult {
   const codexBin = String(config.codexBin ?? "codex").trim() || "codex";
-  const result = spawnSync(codexBin, args, {
-    cwd: config.kernelRootPath,
-    shell: false,
-    stdio: ["pipe", "pipe", "pipe"],
-    windowsHide: true,
-    encoding: "utf8",
-    input: inputText,
-    env: process.env,
-  });
+  const result = requiresShellWrappedSpawn(codexBin)
+    ? spawnSync(buildShellWrappedCommandLine(codexBin, args), {
+        cwd: config.kernelRootPath,
+        shell: true,
+        stdio: ["pipe", "pipe", "pipe"],
+        windowsHide: true,
+        encoding: "utf8",
+        input: inputText,
+        env: process.env,
+      })
+    : spawnSync(codexBin, args, {
+        cwd: config.kernelRootPath,
+        shell: false,
+        stdio: ["pipe", "pipe", "pipe"],
+        windowsHide: true,
+        encoding: "utf8",
+        input: inputText,
+        env: process.env,
+      });
 
   if (result.error) {
     return {
@@ -1040,6 +1136,9 @@ function formatCodexSpawnError(codexBin: string, error: unknown): string {
   }
   if (code === "EPERM") {
     return `Codex binary '${codexBin}' cannot be executed (EPERM).`;
+  }
+  if (code === "EINVAL" && requiresShellWrappedSpawn(codexBin)) {
+    return `Codex binary '${codexBin}' must be launched through the Windows shell.`;
   }
   const message = error instanceof Error ? error.message : String(error);
   return `Failed to execute '${codexBin}': ${firstNonEmptyLine(message)}`;

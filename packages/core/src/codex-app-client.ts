@@ -11,6 +11,7 @@ import {
 import {
   annotateSpawnError,
   asRecord,
+  buildShellWrappedCommandLine,
   createApprovalId,
   isRecord,
   makeTurnKey,
@@ -18,9 +19,12 @@ import {
   normalizeApprovalPolicy,
   normalizeCliPath,
   normalizeModel,
+  normalizeReasoningEffort,
+  normalizeServiceTier,
   normalizeSandboxMode,
   normalizeTimeout,
   normalizeTurnInputItems,
+  requiresShellWrappedSpawn,
   sanitizeError,
   toRequestId,
   toRpcId,
@@ -29,7 +33,9 @@ import type {
   ApprovalDecision,
   ApprovalPolicy,
   ModelValue,
+  ReasoningEffortValue,
   SandboxMode,
+  ServiceTierValue,
 } from "./codex-app-utils.js";
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
@@ -112,6 +118,8 @@ export class CodexAppClient extends EventEmitter {
   sandboxMode: SandboxMode;
   approvalPolicy: ApprovalPolicy;
   model: ModelValue;
+  reasoningEffort: ReasoningEffortValue;
+  serviceTier: ServiceTierValue;
   turnActivityTimeoutMs: number;
   child: ReturnType<typeof spawn> | null;
   reader: readline.Interface | null;
@@ -135,6 +143,8 @@ export class CodexAppClient extends EventEmitter {
     sandboxMode,
     approvalPolicy,
     model,
+    reasoningEffort,
+    serviceTier,
     turnActivityTimeoutMs,
   }: {
     codexBin?: unknown;
@@ -143,6 +153,8 @@ export class CodexAppClient extends EventEmitter {
     sandboxMode?: unknown;
     approvalPolicy?: unknown;
     model?: unknown;
+    reasoningEffort?: unknown;
+    serviceTier?: unknown;
     turnActivityTimeoutMs?: unknown;
   }) {
     super();
@@ -152,6 +164,8 @@ export class CodexAppClient extends EventEmitter {
     this.sandboxMode = normalizeSandboxMode(sandboxMode);
     this.approvalPolicy = normalizeApprovalPolicy(approvalPolicy);
     this.model = normalizeModel(model);
+    this.reasoningEffort = normalizeReasoningEffort(reasoningEffort);
+    this.serviceTier = normalizeServiceTier(serviceTier);
     this.turnActivityTimeoutMs = normalizeTimeout(
       turnActivityTimeoutMs,
       DEFAULT_TURN_ACTIVITY_TIMEOUT_MS,
@@ -183,6 +197,8 @@ export class CodexAppClient extends EventEmitter {
       sandboxMode?: SandboxMode;
       approvalPolicy?: ApprovalPolicy;
       model?: ModelValue;
+      reasoningEffort?: ReasoningEffortValue;
+      serviceTier?: ServiceTierValue;
     } = {},
   ): void {
     const { sandboxMode, approvalPolicy, model } = options;
@@ -190,6 +206,12 @@ export class CodexAppClient extends EventEmitter {
     this.approvalPolicy = normalizeApprovalPolicy(approvalPolicy ?? this.approvalPolicy);
     if (Object.prototype.hasOwnProperty.call(options, "model")) {
       this.model = normalizeModel(model);
+    }
+    if (Object.prototype.hasOwnProperty.call(options, "reasoningEffort")) {
+      this.reasoningEffort = normalizeReasoningEffort(options.reasoningEffort);
+    }
+    if (Object.prototype.hasOwnProperty.call(options, "serviceTier")) {
+      this.serviceTier = normalizeServiceTier(options.serviceTier);
     }
   }
 
@@ -289,6 +311,11 @@ export class CodexAppClient extends EventEmitter {
       displayName: string;
       description: string;
       isDefault: boolean;
+      supportedReasoningEfforts: Array<{
+        reasoningEffort: Exclude<ReasoningEffortValue, null>;
+        description: string;
+      }>;
+      defaultReasoningEffort: ReasoningEffortValue;
     }>
   > {
     await this.ensureStarted();
@@ -322,6 +349,10 @@ export class CodexAppClient extends EventEmitter {
           displayName: String(modelEntry.displayName ?? model).trim() || model,
           description: String(modelEntry.description ?? "").trim(),
           isDefault: modelEntry.isDefault === true,
+          supportedReasoningEfforts: normalizeSupportedReasoningEfforts(
+            modelEntry.supportedReasoningEfforts,
+          ),
+          defaultReasoningEffort: normalizeReasoningEffort(modelEntry.defaultReasoningEffort),
         });
       }
 
@@ -477,6 +508,9 @@ export class CodexAppClient extends EventEmitter {
     const response = await this.#sendRequest<TurnStartResponse>("turn/start", {
       threadId: resolvedThreadId,
       input: normalizedInputItems,
+      model: this.model,
+      serviceTier: this.serviceTier,
+      effort: this.reasoningEffort,
     });
 
     const turnId = String(response.turn?.id ?? "").trim();
@@ -523,11 +557,17 @@ export class CodexAppClient extends EventEmitter {
 
     const args = ["-C", normalizeCliPath(this.cwd), "app-server"];
     const env = this.#buildEnvironment();
-    const child = spawn(this.codexBin, args, {
-      windowsHide: true,
-      shell: false,
-      env,
-    });
+    const child = requiresShellWrappedSpawn(this.codexBin)
+      ? spawn(buildShellWrappedCommandLine(this.codexBin, args), {
+          windowsHide: true,
+          shell: true,
+          env,
+        })
+      : spawn(this.codexBin, args, {
+          windowsHide: true,
+          shell: false,
+          env,
+        });
 
     this.child = child;
     this.started = true;
@@ -583,16 +623,18 @@ export class CodexAppClient extends EventEmitter {
         cwd: string;
         approvalPolicy: ApprovalPolicy;
         sandbox: SandboxMode;
-        model?: string;
+        model?: string | null;
+        serviceTier?: ServiceTierValue;
+        persistExtendedHistory: boolean;
       } = {
         threadId: previousThreadId,
         cwd: normalizeCliPath(this.cwd),
         approvalPolicy: this.approvalPolicy,
         sandbox: this.sandboxMode,
+        model: this.model,
+        serviceTier: this.serviceTier,
+        persistExtendedHistory: false,
       };
-      if (this.model) {
-        resumeParams.model = this.model;
-      }
       try {
         await this.#sendRequest("thread/resume", resumeParams);
         return previousThreadId;
@@ -610,16 +652,18 @@ export class CodexAppClient extends EventEmitter {
       approvalPolicy: ApprovalPolicy;
       sandbox: SandboxMode;
       experimentalRawEvents: boolean;
-      model?: string;
+      persistExtendedHistory: boolean;
+      model?: string | null;
+      serviceTier?: ServiceTierValue;
     } = {
       cwd: normalizeCliPath(this.cwd),
       approvalPolicy: this.approvalPolicy,
       sandbox: this.sandboxMode,
       experimentalRawEvents: false,
+      persistExtendedHistory: false,
+      model: this.model,
+      serviceTier: this.serviceTier,
     };
-    if (this.model) {
-      startParams.model = this.model;
-    }
 
     const started = await this.#sendRequest<ThreadResponse>("thread/start", startParams);
     const nextThreadId = String(started.thread?.id ?? "").trim();
@@ -1084,4 +1128,32 @@ export class CodexAppClient extends EventEmitter {
     this.latestSessionModel = null;
     this.latestSessionModelUpdatedAt = null;
   }
+}
+
+function normalizeSupportedReasoningEfforts(value: unknown): Array<{
+  reasoningEffort: Exclude<ReasoningEffortValue, null>;
+  description: string;
+}> {
+  const options: Array<{
+    reasoningEffort: Exclude<ReasoningEffortValue, null>;
+    description: string;
+  }> = [];
+  const seen = new Set<string>();
+
+  for (const entry of Array.isArray(value) ? value : []) {
+    const option = asRecord(entry);
+    const reasoningEffort = normalizeReasoningEffort(
+      option.reasoningEffort ?? option.effort ?? option.id,
+    );
+    if (!reasoningEffort || seen.has(reasoningEffort)) {
+      continue;
+    }
+    seen.add(reasoningEffort);
+    options.push({
+      reasoningEffort,
+      description: String(option.description ?? "").trim(),
+    });
+  }
+
+  return options;
 }

@@ -5,6 +5,14 @@ import process, { stdin as input, stdout as output } from "node:process";
 import { spawnSync } from "node:child_process";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
+import { codexInstallPackageSpec } from "./codex-version.mjs";
+import {
+  buildCodexCompatibilityError,
+  buildCodexCompatibilityNotice,
+  probeCodexVersion,
+  resolveCodexBinForStart,
+  resolveCompatibleInstalledCodexBin,
+} from "./codex-runtime.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -15,8 +23,7 @@ const servicePromptStatePath = path.join(runtimeDir, "service-onboarding.json");
 const nodeBin = process.execPath;
 const agentEngineEnvPath = path.join(repoRoot, "apps", "agent-engine", ".env");
 const controlPlaneEnvPath = path.join(repoRoot, "apps", "control-plane", ".env");
-const codexNpmPackage = "@openai/codex";
-const codexInstallCommand = `npm install -g ${codexNpmPackage}`;
+const codexInstallCommand = `npm install -g ${codexInstallPackageSpec}`;
 const packageVersion = readPackageVersion();
 
 const rawArgs = process.argv
@@ -66,6 +73,10 @@ async function main() {
     }
     case "restart": {
       runNode(["scripts/dist/ensure-shared-build.mjs"]);
+      await ensureCompatibleCodexBinary({
+        autoInstall: false,
+        purpose: "restart",
+      });
       if (isServiceAlreadyInstalled()) {
         runNode(["scripts/dist/service.mjs", "stop"]);
         runNode(["scripts/dist/service.mjs", "start"]);
@@ -91,7 +102,23 @@ async function main() {
       return;
     }
     case "service": {
+      const serviceAction = String(rawArgs[1] ?? "")
+        .trim()
+        .toLowerCase();
+      if (serviceAction === "install" || serviceAction === "start") {
+        await ensureCompatibleCodexBinary({
+          autoInstall: false,
+          purpose: "service",
+        });
+      }
       runNode(["scripts/dist/service.mjs", ...rawArgs.slice(1)]);
+      return;
+    }
+    case "_update_resume": {
+      await resumeAfterUpdate({
+        serviceInstalled: rawArgs.includes("--service-installed"),
+        runningBeforeUpdate: rawArgs.includes("--resume-running"),
+      });
       return;
     }
     case "update":
@@ -139,25 +166,14 @@ function runNodeCapture(scriptArgs, stdioMode = "pipe") {
 }
 
 async function ensureCodexLogin() {
-  const resolved = resolveCodexBinForStart();
-  let codexBin = resolved.bin;
-  let status = runCodex(codexBin, ["login", "status"], "pipe");
+  const codexBin = await ensureCompatibleCodexBinary({
+    autoInstall: false,
+    purpose: "start",
+  });
+  const status = runCodex(codexBin, ["login", "status"], "pipe");
   if (status.ok) {
     console.log("Codex login already configured.");
     return;
-  }
-
-  if (status.errorCode === "ENOENT") {
-    codexBin = await recoverCodexBinary({
-      resolved,
-      status,
-    });
-
-    status = runCodex(codexBin, ["login", "status"], "pipe");
-    if (status.ok) {
-      console.log("Codex login already configured.");
-      return;
-    }
   }
 
   const reason = status.errorMessage || status.stderr || status.stdout;
@@ -296,6 +312,33 @@ async function runSelfUpdate() {
   }
 
   console.log("copilot-hub updated to latest.");
+  const resume = runNodeCapture(
+    [
+      "scripts/dist/cli.mjs",
+      "_update_resume",
+      ...(serviceInstalled ? ["--service-installed"] : ["--local-mode"]),
+      ...(runningBeforeUpdate ? ["--resume-running"] : ["--stopped"]),
+    ],
+    "inherit",
+  );
+  if (!resume.ok) {
+    console.log(
+      "Update completed, but post-update Codex validation or restart failed. Run 'copilot-hub start' manually.",
+    );
+  }
+}
+
+async function resumeAfterUpdate({
+  serviceInstalled,
+  runningBeforeUpdate,
+}: {
+  serviceInstalled: boolean;
+  runningBeforeUpdate: boolean;
+}) {
+  await ensureCompatibleCodexBinary({
+    autoInstall: true,
+    purpose: "update",
+  });
 
   if (!runningBeforeUpdate) {
     console.log("Services remain stopped. Run 'copilot-hub start' when ready.");
@@ -306,7 +349,6 @@ async function runSelfUpdate() {
     const startService = runNodeCapture(["scripts/dist/service.mjs", "start"], "inherit");
     if (!startService.ok) {
       console.log("Update completed, but service start failed. Run 'copilot-hub start' manually.");
-      return;
     }
     return;
   }
@@ -382,45 +424,91 @@ function writeServicePromptState(decision) {
   }
 }
 
-async function recoverCodexBinary({ resolved, status }) {
-  const detected = findDetectedCodexBin();
-  if (detected && detected !== resolved.bin) {
-    const probe = runCodex(detected, ["--version"], "pipe");
-    if (probe.ok) {
-      console.log(`Detected Codex binary: ${detected}`);
-      return detected;
+async function ensureCompatibleCodexBinary({
+  autoInstall,
+  purpose,
+}: {
+  autoInstall: boolean;
+  purpose: "start" | "restart" | "service" | "update";
+}): Promise<string> {
+  const resolved = resolveCodexBinForStart({
+    repoRoot,
+    agentEngineEnvPath,
+    controlPlaneEnvPath,
+  });
+  const currentProbe = probeCodexVersion({
+    codexBin: resolved.bin,
+    repoRoot,
+  });
+
+  if (currentProbe.ok && currentProbe.compatible) {
+    return resolved.bin;
+  }
+
+  if (!resolved.userConfigured) {
+    const compatibleInstalled = resolveCompatibleInstalledCodexBin({ repoRoot });
+    if (compatibleInstalled) {
+      if (compatibleInstalled !== resolved.bin) {
+        const probe = probeCodexVersion({
+          codexBin: compatibleInstalled,
+          repoRoot,
+        });
+        if (probe.ok) {
+          console.log(`Using compatible Codex CLI ${probe.version} from '${compatibleInstalled}'.`);
+        } else {
+          console.log(`Using compatible Codex CLI from '${compatibleInstalled}'.`);
+        }
+      }
+      return compatibleInstalled;
     }
   }
 
   if (resolved.userConfigured) {
-    return resolved.bin;
-  }
-
-  if (!process.stdin.isTTY) {
     throw new Error(
-      [
-        status.errorMessage || `Codex binary '${resolved.bin}' was not found.`,
-        `Install Codex CLI with '${codexInstallCommand}' or set CODEX_BIN, then retry 'npm run start'.`,
-      ]
-        .filter(Boolean)
-        .join("\n"),
+      buildCodexCompatibilityError({
+        resolved,
+        probe: currentProbe,
+        includeInstallHint: false,
+        installCommand: codexInstallCommand,
+      }),
     );
   }
 
-  console.log("Codex CLI was not found on this machine.");
-  const rl = createInterface({ input, output });
-  let installNow = false;
-  try {
-    installNow = await askYesNo(rl, `Install Codex CLI now (${codexInstallCommand})?`, true);
-  } finally {
-    rl.close();
+  if (!autoInstall && !process.stdin.isTTY) {
+    throw new Error(
+      buildCodexCompatibilityError({
+        resolved,
+        probe: currentProbe,
+        includeInstallHint: true,
+        installCommand: codexInstallCommand,
+      }),
+    );
   }
 
-  if (!installNow) {
-    throw new Error("Codex CLI is required before starting services.");
+  let shouldInstall = autoInstall;
+  if (!autoInstall) {
+    console.log(buildCodexCompatibilityNotice({ resolved, probe: currentProbe }));
+    const rl = createInterface({ input, output });
+    try {
+      shouldInstall = await askYesNo(
+        rl,
+        `Install compatible Codex CLI now (${codexInstallCommand})?`,
+        true,
+      );
+    } finally {
+      rl.close();
+    }
   }
 
-  const install = runNpm(["install", "-g", codexNpmPackage], "inherit");
+  if (!shouldInstall) {
+    throw new Error(
+      purpose === "update"
+        ? "Compatible Codex CLI is required before restarting services."
+        : "Compatible Codex CLI is required before starting services.",
+    );
+  }
+
+  const install = runNpm(["install", "-g", codexInstallPackageSpec], "inherit");
   if (!install.ok) {
     throw new Error(
       [
@@ -435,28 +523,50 @@ async function recoverCodexBinary({ resolved, status }) {
     );
   }
 
-  const installed = resolveInstalledCodexBin();
+  const installed = resolveCompatibleInstalledCodexBin({ repoRoot });
   if (!installed) {
     throw new Error(
       [
-        "Codex CLI appears installed, but no runnable 'codex' binary was detected.",
-        "Set CODEX_BIN to the full Codex executable path, then retry 'npm run start'.",
+        `Compatible Codex CLI was not detected after installation.`,
+        "Set CODEX_BIN to a compatible executable path, then retry.",
       ].join("\n"),
     );
   }
 
-  console.log(`Codex CLI installed. Using '${installed}'.`);
+  const installedProbe = probeCodexVersion({
+    codexBin: installed,
+    repoRoot,
+  });
+  if (installedProbe.ok) {
+    console.log(`Codex CLI ready: ${installedProbe.version} from '${installed}'.`);
+  } else {
+    console.log(`Codex CLI ready from '${installed}'.`);
+  }
   return installed;
 }
 
 function runCodex(codexBin, args, stdioMode) {
   const stdio: any = stdioMode === "inherit" ? "inherit" : ["ignore", "pipe", "pipe"];
-  const result = spawnSync(codexBin, args, {
-    cwd: repoRoot,
-    stdio,
-    shell: false,
-    encoding: "utf8",
-  });
+  const result =
+    process.platform === "win32" && /\.(cmd|bat)$/i.test(String(codexBin ?? ""))
+      ? spawnSync(
+          [
+            quoteWindowsShellValue(codexBin),
+            ...args.map((arg) => quoteWindowsShellValue(arg)),
+          ].join(" "),
+          {
+            cwd: repoRoot,
+            stdio,
+            shell: true,
+            encoding: "utf8",
+          },
+        )
+      : spawnSync(codexBin, args, {
+          cwd: repoRoot,
+          stdio,
+          shell: false,
+          encoding: "utf8",
+        });
 
   if (result.error) {
     return {
@@ -478,144 +588,8 @@ function runCodex(codexBin, args, stdioMode) {
   };
 }
 
-function resolveCodexBinForStart() {
-  const fromEnv = nonEmpty(process.env.CODEX_BIN);
-  if (fromEnv) {
-    return {
-      bin: fromEnv,
-      source: "process_env",
-      userConfigured: true,
-    };
-  }
-
-  for (const [source, envPath] of [
-    ["agent_env", agentEngineEnvPath],
-    ["control_plane_env", controlPlaneEnvPath],
-  ]) {
-    const value = readEnvValue(envPath, "CODEX_BIN");
-    if (value) {
-      return {
-        bin: value,
-        source,
-        userConfigured: true,
-      };
-    }
-  }
-
-  const detected = findDetectedCodexBin();
-  if (detected) {
-    return {
-      bin: detected,
-      source: "detected",
-      userConfigured: false,
-    };
-  }
-
-  return {
-    bin: "codex",
-    source: "default",
-    userConfigured: false,
-  };
-}
-
-function resolveInstalledCodexBin() {
-  const candidates = dedupe(
-    ["codex", findDetectedCodexBin(), findWindowsNpmGlobalCodexBin(), findVscodeCodexExe()].filter(
-      Boolean,
-    ),
-  );
-
-  for (const candidate of candidates) {
-    const status = runCodex(candidate, ["--version"], "pipe");
-    if (status.ok) {
-      return candidate;
-    }
-  }
-
-  return "";
-}
-
-function findDetectedCodexBin() {
-  if (process.platform !== "win32") {
-    return "";
-  }
-
-  return findVscodeCodexExe() || findWindowsNpmGlobalCodexBin() || "";
-}
-
-function findVscodeCodexExe() {
-  const userProfile = nonEmpty(process.env.USERPROFILE);
-  if (!userProfile) {
-    return "";
-  }
-
-  const extensionsDir = path.join(userProfile, ".vscode", "extensions");
-  if (!fs.existsSync(extensionsDir)) {
-    return "";
-  }
-
-  const candidates = fs
-    .readdirSync(extensionsDir, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => entry.name)
-    .filter((name) => name.startsWith("openai.chatgpt-"))
-    .sort()
-    .reverse();
-
-  for (const folder of candidates) {
-    const exePath = path.join(extensionsDir, folder, "bin", "windows-x86_64", "codex.exe");
-    if (fs.existsSync(exePath)) {
-      return exePath;
-    }
-  }
-
-  return "";
-}
-
-function findWindowsNpmGlobalCodexBin() {
-  if (process.platform !== "win32") {
-    return "";
-  }
-
-  const candidates = [];
-  const appData = nonEmpty(process.env.APPDATA);
-  if (appData) {
-    candidates.push(path.join(appData, "npm", "codex.cmd"));
-    candidates.push(path.join(appData, "npm", "codex.exe"));
-    candidates.push(path.join(appData, "npm", "codex"));
-  }
-
-  const npmPrefix = readNpmPrefix();
-  if (npmPrefix) {
-    candidates.push(path.join(npmPrefix, "codex.cmd"));
-    candidates.push(path.join(npmPrefix, "codex.exe"));
-    candidates.push(path.join(npmPrefix, "codex"));
-  }
-
-  for (const candidate of dedupe(candidates)) {
-    if (fs.existsSync(candidate)) {
-      return candidate;
-    }
-  }
-
-  return "";
-}
-
-function readNpmPrefix() {
-  const result = spawnNpm(["config", "get", "prefix"], {
-    cwd: repoRoot,
-    stdio: ["ignore", "pipe", "pipe"],
-    encoding: "utf8",
-  });
-  if (result.error || result.status !== 0) {
-    return "";
-  }
-
-  const value = String(result.stdout ?? "").trim();
-  if (!value || value.toLowerCase() === "undefined") {
-    return "";
-  }
-  return value;
+function quoteWindowsShellValue(value) {
+  return `"${String(value ?? "").replace(/"/g, '\\"')}"`;
 }
 
 function runNpm(args, stdioMode) {
@@ -646,34 +620,6 @@ function runNpm(args, stdioMode) {
   };
 }
 
-function readEnvValue(filePath, key) {
-  if (!fs.existsSync(filePath)) {
-    return "";
-  }
-
-  const lines = fs.readFileSync(filePath, "utf8").split(/\r?\n/);
-  const pattern = new RegExp(`^\\s*${escapeRegex(key)}\\s*=\\s*(.*)\\s*$`);
-  for (const line of lines) {
-    const match = line.match(pattern);
-    if (!match) {
-      continue;
-    }
-    return unquote(match[1]);
-  }
-  return "";
-}
-
-function unquote(value) {
-  const raw = String(value ?? "").trim();
-  if (!raw) {
-    return "";
-  }
-  if ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'"))) {
-    return raw.slice(1, -1).trim();
-  }
-  return raw;
-}
-
 async function askYesNo(rl, label, defaultYes) {
   const suffix = defaultYes ? "[Y/n]" : "[y/N]";
   const answer = await rl.question(`${label} ${suffix}: `);
@@ -690,15 +636,6 @@ async function askYesNo(rl, label, defaultYes) {
     return false;
   }
   return defaultYes;
-}
-
-function escapeRegex(value) {
-  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function nonEmpty(value) {
-  const normalized = String(value ?? "").trim();
-  return normalized || "";
 }
 
 function firstLine(value) {
@@ -738,10 +675,6 @@ function normalizeErrorCode(error) {
   return String(error?.code ?? "")
     .trim()
     .toUpperCase();
-}
-
-function dedupe(values: string[]) {
-  return [...new Set(values.map((value) => String(value).trim()).filter(Boolean))];
 }
 
 function spawnNpm(args, options) {

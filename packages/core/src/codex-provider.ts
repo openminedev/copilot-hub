@@ -22,6 +22,8 @@ type CodexProviderInit = {
   sandboxMode?: string;
   approvalPolicy?: string;
   model?: string | null;
+  reasoningEffort?: string | null;
+  serviceTier?: string | null;
   workspaceRoot: string;
   turnActivityTimeoutMs?: number;
 };
@@ -37,6 +39,8 @@ export class CodexProvider extends EventEmitter {
     sandboxMode,
     approvalPolicy,
     model,
+    reasoningEffort,
+    serviceTier,
     workspaceRoot,
     turnActivityTimeoutMs,
   }: CodexProviderInit) {
@@ -50,6 +54,8 @@ export class CodexProvider extends EventEmitter {
       sandboxMode,
       approvalPolicy,
       model,
+      reasoningEffort,
+      serviceTier,
       turnActivityTimeoutMs,
     });
 

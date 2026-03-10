@@ -119,12 +119,31 @@ export class BotManager {
   }
 
   async startAutoBots(): Promise<void> {
+    const failures: Array<{ botId: string; error: string }> = [];
     for (const supervisor of this.supervisors.values()) {
       if (supervisor.config.enabled !== false) {
-        await supervisor.boot();
+        try {
+          await supervisor.boot();
+        } catch (error) {
+          supervisor.recordStartupFailure(error);
+          failures.push({
+            botId: supervisor.id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          console.error(
+            `[kernel:${supervisor.id}] auto-start failed: ${failures[failures.length - 1]?.error}`,
+          );
+        }
       }
     }
     this.startHeartbeatScheduler();
+    if (failures.length > 0) {
+      console.error(
+        `Auto-start completed with ${failures.length} failed bot(s): ${failures
+          .map((entry) => entry.botId)
+          .join(", ")}`,
+      );
+    }
   }
 
   listBots(): SupervisorStatus[] {
