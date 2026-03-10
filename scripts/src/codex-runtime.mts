@@ -230,12 +230,17 @@ function buildResolvedCodexBin({
   env: NodeJS.ProcessEnv;
   repoRoot: string;
 }): ResolvedCodexBin {
-  const normalized = String(value ?? "")
+  const normalizedValue = normalizeConfiguredCodexBin({
+    value,
+    env,
+    repoRoot,
+  });
+  const normalized = String(normalizedValue ?? "")
     .trim()
     .toLowerCase();
   if (normalized && normalized !== "codex") {
     return {
-      bin: value,
+      bin: normalizedValue,
       source,
       userConfigured: true,
     };
@@ -247,6 +252,45 @@ function buildResolvedCodexBin({
     source,
     userConfigured: false,
   };
+}
+
+export function normalizeConfiguredCodexBin({
+  value,
+  env = process.env,
+  repoRoot,
+  platform = process.platform,
+}: {
+  value: string;
+  env?: NodeJS.ProcessEnv;
+  repoRoot: string;
+  platform?: NodeJS.Platform;
+}): string {
+  const normalizedValue = String(value ?? "").trim();
+  if (!normalizedValue || platform !== "win32") {
+    return normalizedValue;
+  }
+
+  const normalizedBasename = path.win32.basename(normalizedValue).toLowerCase();
+  if (normalizedBasename !== "codex.cmd" && normalizedBasename !== "codex.bat") {
+    return normalizedValue;
+  }
+
+  if (path.win32.isAbsolute(normalizedValue)) {
+    const wrapperDir = path.win32.dirname(normalizedValue);
+    const entrypoint = path.win32.join(
+      wrapperDir,
+      "node_modules",
+      "@openai",
+      "codex",
+      "bin",
+      "codex.js",
+    );
+    if (fs.existsSync(entrypoint)) {
+      return entrypoint;
+    }
+  }
+
+  return findWindowsNpmGlobalCodexBin(env, repoRoot) || normalizedValue;
 }
 
 function findDetectedCodexBin(env: NodeJS.ProcessEnv, repoRoot: string): string {

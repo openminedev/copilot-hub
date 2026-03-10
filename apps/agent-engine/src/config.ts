@@ -213,7 +213,7 @@ function resolveCodexBin(rawValue: string | undefined): string {
   const normalized = value.toLowerCase();
 
   if (value && normalized !== "codex") {
-    return value;
+    return normalizeConfiguredCodexBin(value);
   }
 
   if (process.platform === "win32") {
@@ -228,6 +228,35 @@ function resolveCodexBin(rawValue: string | undefined): string {
   }
 
   return value || "codex";
+}
+
+function normalizeConfiguredCodexBin(value: string): string {
+  const normalizedValue = String(value ?? "").trim();
+  if (process.platform !== "win32" || !normalizedValue) {
+    return normalizedValue;
+  }
+
+  const basename = path.win32.basename(normalizedValue).toLowerCase();
+  if (basename !== "codex.cmd" && basename !== "codex.bat") {
+    return normalizedValue;
+  }
+
+  if (path.win32.isAbsolute(normalizedValue)) {
+    const wrapperDir = path.win32.dirname(normalizedValue);
+    const entrypoint = path.win32.join(
+      wrapperDir,
+      "node_modules",
+      "@openai",
+      "codex",
+      "bin",
+      "codex.js",
+    );
+    if (fs.existsSync(entrypoint)) {
+      return entrypoint;
+    }
+  }
+
+  return findWindowsNpmGlobalCodexBin() || normalizedValue;
 }
 
 function findVscodeCodexExe(): string | null {
