@@ -5,6 +5,7 @@ import process, { stdin as input, stdout as output } from "node:process";
 import { spawnSync } from "node:child_process";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
+import { spawnCodexSync } from "./codex-spawn.mjs";
 import { codexInstallPackageSpec } from "./codex-version.mjs";
 import { initializeCopilotHubLayout, resolveCopilotHubLayout } from "./install-layout.mjs";
 import {
@@ -443,26 +444,13 @@ async function ensureCompatibleCodexBinary({
 
 function runCodex(codexBin, args, stdioMode) {
   const stdio: any = stdioMode === "inherit" ? "inherit" : ["ignore", "pipe", "pipe"];
-  const result =
-    process.platform === "win32" && /\.(cmd|bat)$/i.test(String(codexBin ?? ""))
-      ? spawnSync(
-          [
-            quoteWindowsShellValue(codexBin),
-            ...args.map((arg) => quoteWindowsShellValue(arg)),
-          ].join(" "),
-          {
-            cwd: repoRoot,
-            stdio,
-            shell: true,
-            encoding: "utf8",
-          },
-        )
-      : spawnSync(codexBin, args, {
-          cwd: repoRoot,
-          stdio,
-          shell: false,
-          encoding: "utf8",
-        });
+  const result = spawnCodexSync({
+    codexBin,
+    args,
+    cwd: repoRoot,
+    stdio,
+    encoding: "utf8",
+  });
 
   if (result.error) {
     return {
@@ -482,10 +470,6 @@ function runCodex(codexBin, args, stdioMode) {
     errorMessage: "",
     errorCode: "",
   };
-}
-
-function quoteWindowsShellValue(value) {
-  return `"${String(value ?? "").replace(/"/g, '\\"')}"`;
 }
 
 function runNpm(args, stdioMode) {

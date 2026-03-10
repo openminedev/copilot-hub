@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { spawnSync } from "node:child_process";
+import { spawnCodexSync } from "./codex-spawn.mjs";
 import {
   compareSemver,
   codexVersionRequirementLabel,
@@ -395,32 +396,11 @@ function runCodex({
 }
 
 function spawnCodex(codexBin: string, args: string[], repoRoot: string) {
-  if (/\.(cjs|mjs|js)$/i.test(codexBin)) {
-    return spawnSync(process.execPath, [codexBin, ...args], {
-      cwd: repoRoot,
-      stdio: ["ignore", "pipe", "pipe"],
-      shell: false,
-      encoding: "utf8",
-    });
-  }
-
-  if (process.platform === "win32" && /\.(cmd|bat)$/i.test(codexBin)) {
-    const commandLine = [
-      quoteWindowsShellValue(codexBin),
-      ...args.map(quoteWindowsShellValue),
-    ].join(" ");
-    return spawnSync(commandLine, {
-      cwd: repoRoot,
-      stdio: ["ignore", "pipe", "pipe"],
-      shell: true,
-      encoding: "utf8",
-    });
-  }
-
-  return spawnSync(codexBin, args, {
+  return spawnCodexSync({
+    codexBin,
+    args,
     cwd: repoRoot,
     stdio: ["ignore", "pipe", "pipe"],
-    shell: false,
     encoding: "utf8",
   });
 }
@@ -491,10 +471,6 @@ function normalizeErrorCode(error: unknown): string {
 
 function dedupe(values: Array<string | null | undefined>): string[] {
   return [...new Set(values.map((value) => String(value ?? "").trim()).filter(Boolean))];
-}
-
-function quoteWindowsShellValue(value: string): string {
-  return `"${String(value ?? "").replace(/"/g, '\\"')}"`;
 }
 
 function spawnNpm(args: string[], repoRoot: string) {
