@@ -7,6 +7,12 @@ import process from "node:process";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { initializeCopilotHubLayout, resolveCopilotHubLayout } from "./install-layout.mjs";
+import {
+  buildWindowsHiddenLauncherCommand,
+  ensureWindowsHiddenLauncher,
+  getWindowsHiddenLauncherScriptPath,
+  resolveWindowsScriptHost,
+} from "./windows-hidden-launcher.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -15,6 +21,7 @@ const layout = resolveCopilotHubLayout({ repoRoot });
 initializeCopilotHubLayout({ repoRoot, layout });
 const nodeBin = process.execPath;
 const daemonScriptPath = path.join(repoRoot, "scripts", "dist", "daemon.mjs");
+const windowsLauncherScriptPath = getWindowsHiddenLauncherScriptPath(layout.runtimeDir);
 
 const WINDOWS_TASK_NAME = "CopilotHub";
 const WINDOWS_RUN_KEY_PATH = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
@@ -134,7 +141,12 @@ async function showStatus() {
 
 async function startService() {
   if (process.platform === "win32") {
-    startWindowsAutoStart();
+    const mode = startWindowsAutoStart();
+    if (mode === "run-key") {
+      console.log("Service started in background (Windows startup registry entry).");
+    } else {
+      console.log("Service started in background (Windows Task Scheduler).");
+    }
     return;
   }
 
@@ -196,7 +208,7 @@ function installWindowsAutoStart() {
   }
 
   installWindowsRunKey(command);
-  runDaemon("start");
+  runWindowsHiddenLauncher();
   return "run-key";
 }
 
@@ -234,6 +246,10 @@ function uninstallWindowsAutoStart() {
     throw new Error(
       runKeyDelete.combinedOutput || "Failed to remove Windows startup registry entry.",
     );
+  }
+
+  if (fs.existsSync(windowsLauncherScriptPath)) {
+    fs.rmSync(windowsLauncherScriptPath, { force: true });
   }
 
   return removed;
@@ -281,12 +297,20 @@ function runWindowsTask() {
 }
 
 function startWindowsAutoStart() {
+  const command = buildWindowsLaunchCommand();
   const runKey = queryWindowsRunKey();
   if (runKey.installed) {
-    runDaemon("start");
-    return;
+    installWindowsRunKey(command);
+    runWindowsHiddenLauncher();
+    return "run-key";
   }
+  const task = queryWindowsTask();
+  if (!task.installed) {
+    throw new Error("Service is not installed. Run 'copilot-hub service install' first.");
+  }
+  ensureTaskSchedulerAutoStart(command);
   runWindowsTask();
+  return "task";
 }
 
 function queryWindowsRunKey() {
@@ -300,6 +324,19 @@ function queryWindowsRunKey() {
     return { installed: false };
   }
   throw new Error(result.combinedOutput || "Failed to query Windows startup registry entry.");
+}
+
+function queryWindowsTask() {
+  const result = runChecked("schtasks", ["/Query", "/TN", WINDOWS_TASK_NAME], {
+    allowFailure: true,
+  });
+  if (result.ok) {
+    return { installed: true };
+  }
+  if (isNotFoundMessage(result.combinedOutput)) {
+    return { installed: false };
+  }
+  throw new Error(result.combinedOutput || "Failed to query Windows auto-start task.");
 }
 
 function installWindowsRunKey(command) {
@@ -318,6 +355,21 @@ function installWindowsRunKey(command) {
     ],
     { stdio: "pipe" },
   );
+}
+
+function ensureTaskSchedulerAutoStart(command) {
+  const result = runChecked(
+    "schtasks",
+    ["/Create", "/TN", WINDOWS_TASK_NAME, "/SC", "ONLOGON", "/RL", "LIMITED", "/F", "/TR", command],
+    { allowFailure: true },
+  );
+  if (result.ok) {
+    return;
+  }
+  if (isNotFoundMessage(result.combinedOutput)) {
+    throw new Error("Service is not installed. Run 'copilot-hub service install' first.");
+  }
+  throw new Error(result.combinedOutput || "Failed to update Windows auto-start task.");
 }
 
 function installLinuxService() {
@@ -504,6 +556,20 @@ function ensureDaemonScript() {
   }
 }
 
+function runWindowsHiddenLauncher() {
+  const launcherScriptPath = ensureWindowsLauncherScript();
+  const scriptHost = resolveWindowsScriptHost(process.env);
+  if (!fs.existsSync(scriptHost)) {
+    throw new Error("Windows Script Host is not available.");
+  }
+  const result = runChecked(scriptHost, ["//B", "//Nologo", launcherScriptPath], {
+    allowFailure: true,
+  });
+  if (!result.ok) {
+    throw new Error(result.combinedOutput || "Failed to launch hidden Windows service starter.");
+  }
+}
+
 function ensureSystemctl() {
   ensureCommandAvailable(
     "systemctl",
@@ -629,7 +695,18 @@ function getErrorMessage(error) {
 }
 
 function buildWindowsLaunchCommand() {
-  return `"${nodeBin}" "${daemonScriptPath}" run`;
+  const launcherScriptPath = ensureWindowsLauncherScript();
+  return buildWindowsHiddenLauncherCommand(launcherScriptPath, process.env);
+}
+
+function ensureWindowsLauncherScript() {
+  ensureDaemonScript();
+  return ensureWindowsHiddenLauncher({
+    scriptPath: windowsLauncherScriptPath,
+    nodeBin,
+    daemonScriptPath,
+    runtimeDir: layout.runtimeDir,
+  });
 }
 
 function escapeXml(value) {

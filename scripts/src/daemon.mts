@@ -35,6 +35,7 @@ const nodeBin = process.execPath;
 const agentEngineEnvPath = layout.agentEngineEnvPath;
 const controlPlaneEnvPath = layout.controlPlaneEnvPath;
 const codexInstallCommand = `npm install -g ${codexInstallPackageSpec}`;
+const WINDOWS_BACKGROUND_ENV = "COPILOT_HUB_DAEMON_BACKGROUND";
 
 const BASE_CHECK_MS = 5000;
 const MAX_BACKOFF_MS = 60000;
@@ -74,13 +75,23 @@ async function main() {
 }
 
 async function startDaemonProcess() {
+  const existingPid = getRunningDaemonPid();
+  if (existingPid > 0) {
+    console.log(`[daemon] already running (pid ${existingPid})`);
+    return;
+  }
+
+  const pid = await spawnDetachedDaemonProcess();
+  console.log(`[daemon] started (pid ${pid})`);
+}
+
+async function spawnDetachedDaemonProcess() {
   ensureScripts();
   ensureRuntimeDirs();
 
   const existingPid = getRunningDaemonPid();
   if (existingPid > 0) {
-    console.log(`[daemon] already running (pid ${existingPid})`);
-    return;
+    return existingPid;
   }
 
   removeDaemonState();
@@ -94,7 +105,10 @@ async function startDaemonProcess() {
       stdio: ["ignore", logFd, logFd],
       windowsHide: true,
       shell: false,
-      env: process.env,
+      env: {
+        ...process.env,
+        [WINDOWS_BACKGROUND_ENV]: "1",
+      },
     });
   } finally {
     fs.closeSync(logFd);
@@ -111,10 +125,15 @@ async function startDaemonProcess() {
     throw new Error(`Daemon process exited immediately (pid ${pid}). Check logs: ${daemonLogPath}`);
   }
 
-  console.log(`[daemon] started (pid ${pid})`);
+  return pid;
 }
 
 async function runDaemonLoop() {
+  if (shouldDetachInteractiveWindowsDaemon()) {
+    await spawnDetachedDaemonProcess();
+    return;
+  }
+
   ensureScripts();
   ensureRuntimeDirs();
 
@@ -543,6 +562,22 @@ function shouldPauseBeforeExit() {
   }
 
   return true;
+}
+
+function shouldDetachInteractiveWindowsDaemon() {
+  if (process.platform !== "win32") {
+    return false;
+  }
+
+  if (String(process.env[WINDOWS_BACKGROUND_ENV] ?? "").trim() === "1") {
+    return false;
+  }
+
+  if (!process.stdin || !process.stdout) {
+    return false;
+  }
+
+  return Boolean(process.stdin.isTTY && process.stdout.isTTY);
 }
 
 function detectFatalStartupError(ensureResult) {
