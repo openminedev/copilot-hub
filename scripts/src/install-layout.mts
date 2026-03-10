@@ -27,15 +27,16 @@ export function resolveCopilotHubLayout({
   platform?: NodeJS.Platform;
   homeDirectory?: string;
 }): CopilotHubLayout {
+  const pathApi = getPathApi(platform);
   const homeDir = resolveCopilotHubHomeDir({
     env,
     platform,
     homeDirectory,
   });
-  const configDir = path.join(homeDir, "config");
-  const dataDir = path.join(homeDir, "data");
-  const logsDir = path.join(homeDir, "logs");
-  const runtimeDir = path.join(homeDir, "runtime");
+  const configDir = pathApi.join(homeDir, "config");
+  const dataDir = pathApi.join(homeDir, "data");
+  const logsDir = pathApi.join(homeDir, "logs");
+  const runtimeDir = pathApi.join(homeDir, "runtime");
 
   void repoRoot;
 
@@ -45,11 +46,11 @@ export function resolveCopilotHubLayout({
     dataDir,
     logsDir,
     runtimeDir,
-    agentEngineEnvPath: path.join(configDir, "agent-engine.env"),
-    controlPlaneEnvPath: path.join(configDir, "control-plane.env"),
-    agentEngineDataDir: path.join(dataDir, "agent-engine"),
-    controlPlaneDataDir: path.join(dataDir, "control-plane"),
-    servicePromptStatePath: path.join(runtimeDir, "service-onboarding.json"),
+    agentEngineEnvPath: pathApi.join(configDir, "agent-engine.env"),
+    controlPlaneEnvPath: pathApi.join(configDir, "control-plane.env"),
+    agentEngineDataDir: pathApi.join(dataDir, "agent-engine"),
+    controlPlaneDataDir: pathApi.join(dataDir, "control-plane"),
+    servicePromptStatePath: pathApi.join(runtimeDir, "service-onboarding.json"),
   };
 }
 
@@ -82,28 +83,29 @@ export function resolveCopilotHubHomeDir({
   platform?: NodeJS.Platform;
   homeDirectory?: string;
 } = {}): string {
-  const explicit = normalizePath(env.COPILOT_HUB_HOME_DIR ?? env.COPILOT_HUB_HOME ?? "");
+  const pathApi = getPathApi(platform);
+  const explicit = normalizePath(env.COPILOT_HUB_HOME_DIR ?? env.COPILOT_HUB_HOME ?? "", pathApi);
   if (explicit) {
     return explicit;
   }
 
   if (platform === "win32") {
-    const appData = normalizePath(env.APPDATA ?? "");
+    const appData = normalizePath(env.APPDATA ?? "", pathApi);
     if (appData) {
-      return path.join(appData, "copilot-hub");
+      return pathApi.join(appData, "copilot-hub");
     }
-    return path.join(homeDirectory, "AppData", "Roaming", "copilot-hub");
+    return pathApi.join(homeDirectory, "AppData", "Roaming", "copilot-hub");
   }
 
   if (platform === "darwin") {
-    return path.join(homeDirectory, "Library", "Application Support", "copilot-hub");
+    return pathApi.join(homeDirectory, "Library", "Application Support", "copilot-hub");
   }
 
-  const xdgConfigHome = normalizePath(env.XDG_CONFIG_HOME ?? "");
+  const xdgConfigHome = normalizePath(env.XDG_CONFIG_HOME ?? "", pathApi);
   if (xdgConfigHome) {
-    return path.join(xdgConfigHome, "copilot-hub");
+    return pathApi.join(xdgConfigHome, "copilot-hub");
   }
-  return path.join(homeDirectory, ".config", "copilot-hub");
+  return pathApi.join(homeDirectory, ".config", "copilot-hub");
 }
 
 function migrateLegacyLayout({
@@ -188,9 +190,13 @@ function directoryHasEntries(directoryPath: string): boolean {
   }
 }
 
-function normalizePath(value: unknown): string {
+function normalizePath(value: unknown, pathApi: typeof path.posix | typeof path.win32): string {
   const normalized = String(value ?? "").trim();
-  return normalized ? path.resolve(normalized) : "";
+  return normalized ? pathApi.resolve(normalized) : "";
+}
+
+function getPathApi(platform: NodeJS.Platform): typeof path.posix | typeof path.win32 {
+  return platform === "win32" ? path.win32 : path.posix;
 }
 
 function removeVolatileRuntimeFiles(targetDir: string): void {

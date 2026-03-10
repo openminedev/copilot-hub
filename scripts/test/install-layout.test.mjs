@@ -28,7 +28,7 @@ test("resolveCopilotHubHomeDir uses the standard per-user appdata location", () 
       },
       homeDirectory: "/home/amine",
     }),
-    path.resolve("/home/amine/.config", "copilot-hub"),
+    path.posix.join("/home/amine/.config", "copilot-hub"),
   );
 });
 

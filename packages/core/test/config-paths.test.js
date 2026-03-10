@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import {
   resolveConfigBaseDir,
@@ -8,56 +10,64 @@ import {
 } from "../dist/config-paths.js";
 
 test("resolveConfigBaseDir prefers explicit base dir then env file dir", () => {
+  const tempRoot = path.join(os.tmpdir(), "copilot-hub-config-paths");
+  const explicitBaseDir = path.join(tempRoot, "config");
+  const envFilePath = path.join(explicitBaseDir, "agent-engine.env");
+  const cwd = path.join(tempRoot, "cwd");
+
   assert.equal(
     resolveConfigBaseDir({
-      configuredBaseDir: "C:/Users/amine/AppData/Roaming/copilot-hub/config",
-      configuredEnvPath: "C:/ignored/.env",
-      cwd: "C:/cwd",
+      configuredBaseDir: explicitBaseDir,
+      configuredEnvPath: path.join(tempRoot, "ignored.env"),
+      cwd,
     }),
-    "C:\\Users\\amine\\AppData\\Roaming\\copilot-hub\\config",
+    path.resolve(explicitBaseDir),
   );
   assert.equal(
     resolveConfigBaseDir({
-      configuredEnvPath: "C:/Users/amine/AppData/Roaming/copilot-hub/config/agent-engine.env",
-      cwd: "C:/cwd",
+      configuredEnvPath: envFilePath,
+      cwd,
     }),
-    "C:\\Users\\amine\\AppData\\Roaming\\copilot-hub\\config",
+    path.resolve(explicitBaseDir),
   );
   assert.equal(
     resolveConfigBaseDir({
-      cwd: "C:/cwd",
+      cwd,
     }),
-    "C:\\cwd",
+    path.resolve(cwd),
   );
 });
 
 test("resolvePathFromBase resolves relative values against the config base dir", () => {
-  const baseDir = "C:/Users/amine/AppData/Roaming/copilot-hub/config";
-  assert.equal(
-    resolvePathFromBase("./data", baseDir),
-    "C:\\Users\\amine\\AppData\\Roaming\\copilot-hub\\config\\data",
-  );
-  assert.equal(resolvePathFromBase("D:/absolute/path", baseDir), "D:\\absolute\\path");
+  const baseDir = path.join(os.tmpdir(), "copilot-hub-config-paths", "config");
+  const absoluteTarget = path.join(path.parse(baseDir).root, "absolute-target");
+
+  assert.equal(resolvePathFromBase("./data", baseDir), path.resolve(baseDir, "./data"));
+  assert.equal(resolvePathFromBase(absoluteTarget, baseDir), path.resolve(absoluteTarget));
   assert.equal(resolveOptionalPathFromBase("", baseDir), null);
 });
 
 test("resolveProcessConfigBaseDir reads the persisted config base env", () => {
+  const configBaseDir = path.join(os.tmpdir(), "copilot-hub-config-paths", "config");
+  const envFilePath = path.join(configBaseDir, "control-plane.env");
+  const cwd = path.join(os.tmpdir(), "copilot-hub-config-paths", "cwd");
+
   assert.equal(
     resolveProcessConfigBaseDir({
       env: {
-        COPILOT_HUB_ENV_BASE_DIR: "C:/Users/amine/AppData/Roaming/copilot-hub/config",
+        COPILOT_HUB_ENV_BASE_DIR: configBaseDir,
       },
-      cwd: "C:/cwd",
+      cwd,
     }),
-    "C:\\Users\\amine\\AppData\\Roaming\\copilot-hub\\config",
+    path.resolve(configBaseDir),
   );
   assert.equal(
     resolveProcessConfigBaseDir({
       env: {
-        COPILOT_HUB_ENV_PATH: "C:/Users/amine/AppData/Roaming/copilot-hub/config/control-plane.env",
+        COPILOT_HUB_ENV_PATH: envFilePath,
       },
-      cwd: "C:/cwd",
+      cwd,
     }),
-    "C:\\Users\\amine\\AppData\\Roaming\\copilot-hub\\config",
+    path.resolve(configBaseDir),
   );
 });
