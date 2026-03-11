@@ -18,7 +18,8 @@ const engineExamplePath = path.join(repoRoot, "apps", "agent-engine", ".env.exam
 const controlPlaneEnvPath = layout.controlPlaneEnvPath;
 const controlPlaneExamplePath = path.join(repoRoot, "apps", "control-plane", ".env.example");
 const TELEGRAM_TOKEN_PATTERN = /^\d{5,}:[A-Za-z0-9_-]{20,}$/;
-const DEFAULT_CONTROL_PLANE_TOKEN_ENV = "HUB_TELEGRAM_TOKEN";
+const DEFAULT_CONTROL_PLANE_TOKEN_ENV = "HUB_TELEGRAM_TOKEN_FILE";
+const LEGACY_CONTROL_PLANE_TOKEN_ENV = "HUB_TELEGRAM_TOKEN";
 
 const args = new Set(process.argv.slice(2));
 const requiredOnly = args.has("--required-only");
@@ -53,13 +54,7 @@ async function main() {
 }
 
 async function configureRequiredTokens({ rl, controlPlaneLines }) {
-  const controlPlaneMap = parseEnvMap(controlPlaneLines);
-
-  const controlPlaneTokenEnvName = nonEmpty(
-    controlPlaneMap.HUB_TELEGRAM_TOKEN_ENV,
-    DEFAULT_CONTROL_PLANE_TOKEN_ENV,
-  );
-  setEnvValue(controlPlaneLines, "HUB_TELEGRAM_TOKEN_ENV", controlPlaneTokenEnvName);
+  const controlPlaneTokenEnvName = migrateControlPlaneTokenEnv(controlPlaneLines);
 
   const postControlPlaneMap = parseEnvMap(controlPlaneLines);
   const currentToken = String(postControlPlaneMap[controlPlaneTokenEnvName] ?? "").trim();
@@ -82,15 +77,9 @@ async function configureRequiredTokens({ rl, controlPlaneLines }) {
 }
 
 async function configureAll({ rl, controlPlaneLines }) {
-  const controlPlaneMap = parseEnvMap(controlPlaneLines);
-
   console.log("\nCopilot Hub control-plane configuration\n");
 
-  const controlPlaneTokenEnvDefault = nonEmpty(
-    controlPlaneMap.HUB_TELEGRAM_TOKEN_ENV,
-    DEFAULT_CONTROL_PLANE_TOKEN_ENV,
-  );
-  setEnvValue(controlPlaneLines, "HUB_TELEGRAM_TOKEN_ENV", controlPlaneTokenEnvDefault);
+  const controlPlaneTokenEnvDefault = migrateControlPlaneTokenEnv(controlPlaneLines);
   const currentControlPlaneToken = String(
     parseEnvMap(controlPlaneLines)[controlPlaneTokenEnvDefault] ?? "",
   ).trim();
@@ -104,6 +93,29 @@ async function configureAll({ rl, controlPlaneLines }) {
   } else {
     console.log("- Control-plane token left unchanged.");
   }
+}
+
+function migrateControlPlaneTokenEnv(lines) {
+  const controlPlaneMap = parseEnvMap(lines);
+  const configuredTokenEnvName = nonEmpty(
+    controlPlaneMap.HUB_TELEGRAM_TOKEN_ENV,
+    DEFAULT_CONTROL_PLANE_TOKEN_ENV,
+  );
+  const shouldMigrateLegacyName = configuredTokenEnvName === LEGACY_CONTROL_PLANE_TOKEN_ENV;
+  const nextTokenEnvName = shouldMigrateLegacyName
+    ? DEFAULT_CONTROL_PLANE_TOKEN_ENV
+    : configuredTokenEnvName;
+  setEnvValue(lines, "HUB_TELEGRAM_TOKEN_ENV", nextTokenEnvName);
+
+  if (shouldMigrateLegacyName) {
+    const legacyToken = String(controlPlaneMap[LEGACY_CONTROL_PLANE_TOKEN_ENV] ?? "").trim();
+    const dedicatedToken = String(controlPlaneMap[DEFAULT_CONTROL_PLANE_TOKEN_ENV] ?? "").trim();
+    if (legacyToken && !dedicatedToken) {
+      setEnvValue(lines, DEFAULT_CONTROL_PLANE_TOKEN_ENV, legacyToken);
+    }
+  }
+
+  return nextTokenEnvName;
 }
 
 function ensureEnvFile(envPath, examplePath) {

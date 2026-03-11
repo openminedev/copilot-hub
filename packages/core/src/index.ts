@@ -10,7 +10,9 @@ export { createProjectFingerprint } from "./project-fingerprint.js";
 export {
   DEFAULT_EXTERNAL_WORKSPACES_DIRNAME,
   getKernelRootPath,
+  resolveKernelRootPath,
   getDefaultExternalWorkspaceBasePath,
+  resolveExternalWorkspaceBasePath,
   resolveDefaultWorkspaceForBot,
   isPathInside as isWorkspacePathInside,
 } from "./workspace-paths.js";
@@ -20,6 +22,7 @@ export {
   resolvePathFromBase,
   resolveOptionalPathFromBase,
 } from "./config-paths.js";
+export { loadCopilotHubEnvironment } from "./env-config.js";
 export { InstanceLock } from "./instance-lock.js";
 export { JsonStateStore } from "./state-store.js";
 export { assertControlPermission } from "./control-permission.js";

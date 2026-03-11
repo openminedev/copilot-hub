@@ -1,24 +1,24 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import dotenv from "dotenv";
 import {
   createWorkspaceBoundaryPolicy,
   assertWorkspaceAllowed,
   parseWorkspaceAllowedRoots,
 } from "@copilot-hub/core/workspace-policy";
 import { parseTurnActivityTimeoutSetting } from "@copilot-hub/core/codex-app-utils";
-import {
-  resolveConfigBaseDir,
-  resolveOptionalPathFromBase,
-  resolvePathFromBase,
-} from "@copilot-hub/core/config-paths";
+import { loadCopilotHubEnvironment } from "@copilot-hub/core";
+import { resolveOptionalPathFromBase, resolvePathFromBase } from "@copilot-hub/core/config-paths";
 import {
   getDefaultExternalWorkspaceBasePath,
   getKernelRootPath,
 } from "@copilot-hub/core/workspace-paths";
 
-const envBaseDir = loadEnvironment();
+const loadedEnvironment = loadEnvironment();
+const envBaseDir = loadedEnvironment.baseDir;
+const envFilePath = loadedEnvironment.envPath;
+const envFileValues = loadedEnvironment.fileValues;
+const envOverrideKeys = loadedEnvironment.overriddenKeys;
 
 type ThreadMode = "single" | "per_chat";
 type CodexSandbox = "read-only" | "workspace-write" | "danger-full-access";
@@ -150,6 +150,9 @@ fs.mkdirSync(dataDir, { recursive: true });
 
 export const config = {
   envBaseDir,
+  envFilePath,
+  envFileValues,
+  envOverrideKeys,
   defaultProviderKind,
   providerDefaults: {
     defaultKind: defaultProviderKind,
@@ -190,22 +193,10 @@ export const config = {
   defaultAllowedChatIds,
 };
 
-function loadEnvironment(): string {
-  const configuredEnvPath = String(process.env.COPILOT_HUB_ENV_PATH ?? "").trim();
-  const resolvedEnvPath = configuredEnvPath ? path.resolve(configuredEnvPath) : "";
-  const baseDir = resolveConfigBaseDir({
-    configuredBaseDir: process.env.COPILOT_HUB_ENV_BASE_DIR,
-    configuredEnvPath: resolvedEnvPath,
+function loadEnvironment() {
+  return loadCopilotHubEnvironment({
     cwd: process.cwd(),
   });
-  if (configuredEnvPath) {
-    process.env.COPILOT_HUB_ENV_PATH = resolvedEnvPath;
-    dotenv.config({ path: resolvedEnvPath });
-  } else {
-    dotenv.config();
-  }
-  process.env.COPILOT_HUB_ENV_BASE_DIR = baseDir;
-  return baseDir;
 }
 
 function resolveCodexBin(rawValue: string | undefined): string {

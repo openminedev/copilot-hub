@@ -1,22 +1,77 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import process from "node:process";
+import { fileURLToPath } from "node:url";
 
 export const DEFAULT_EXTERNAL_WORKSPACES_DIRNAME = "copilot_workspaces";
 const DESKTOP_DIRNAME = "Desktop";
 
 export function getKernelRootPath(): string {
-  return path.resolve(process.cwd());
+  return resolveKernelRootPath();
 }
 
-export function getDefaultExternalWorkspaceBasePath(_kernelRoot = getKernelRootPath()): string {
-  const desktopCandidates = getDesktopCandidates();
-  const fallbackDesktop = path.resolve(process.cwd(), DESKTOP_DIRNAME);
+export function resolveKernelRootPath({
+  env = process.env,
+  moduleUrl = import.meta.url,
+  cwd = process.cwd(),
+}: {
+  env?: NodeJS.ProcessEnv;
+  moduleUrl?: string;
+  cwd?: string;
+} = {}): string {
+  const configuredRoot = String(env.COPILOT_HUB_KERNEL_ROOT ?? "").trim();
+  if (configuredRoot) {
+    return path.resolve(configuredRoot);
+  }
+
+  const moduleFilePath = String(moduleUrl ?? "").trim();
+  if (moduleFilePath) {
+    return path.resolve(path.dirname(fileURLToPath(moduleFilePath)), "..", "..", "..");
+  }
+
+  return path.resolve(String(cwd ?? process.cwd()));
+}
+
+export function getDefaultExternalWorkspaceBasePath(kernelRoot = getKernelRootPath()): string {
+  return resolveExternalWorkspaceBasePath({
+    kernelRootPath: kernelRoot,
+  });
+}
+
+export function resolveExternalWorkspaceBasePath({
+  kernelRootPath,
+  desktopCandidates = getDesktopCandidates(),
+  homeDir = os.homedir(),
+  tempDir = os.tmpdir(),
+}: {
+  kernelRootPath: string;
+  desktopCandidates?: readonly string[];
+  homeDir?: string;
+  tempDir?: string;
+}): string {
   const desktopRoot =
     desktopCandidates.find((candidate) => directoryExists(candidate)) ??
     desktopCandidates[0] ??
-    fallbackDesktop;
-  return path.resolve(desktopRoot, DEFAULT_EXTERNAL_WORKSPACES_DIRNAME);
+    path.resolve(String(homeDir ?? "").trim() || process.cwd(), DESKTOP_DIRNAME);
+
+  const preferredRoot = path.resolve(desktopRoot, DEFAULT_EXTERNAL_WORKSPACES_DIRNAME);
+  if (!isPathInside(kernelRootPath, preferredRoot)) {
+    return preferredRoot;
+  }
+
+  const homeFallbackRoot = path.resolve(
+    String(homeDir ?? "").trim() || process.cwd(),
+    DEFAULT_EXTERNAL_WORKSPACES_DIRNAME,
+  );
+  if (!isPathInside(kernelRootPath, homeFallbackRoot)) {
+    return homeFallbackRoot;
+  }
+
+  return path.resolve(
+    String(tempDir ?? "").trim() || process.cwd(),
+    DEFAULT_EXTERNAL_WORKSPACES_DIRNAME,
+  );
 }
 
 export function resolveDefaultWorkspaceForBot(

@@ -3,12 +3,14 @@ import { BotRuntime } from "@copilot-hub/core/bot-runtime";
 import { config } from "./config.js";
 import { assertWorkspaceAllowed } from "@copilot-hub/core/workspace-policy";
 import { createChannelAdapter } from "./channels/channel-factory.js";
+import { isUsableTelegramToken, resolveHubTelegramToken } from "./hub-token-config.js";
 
-const TELEGRAM_TOKEN_PATTERN = /^\d{5,}:[A-Za-z0-9_-]{20,}$/;
-
-const tokenEnvName =
-  String(process.env.HUB_TELEGRAM_TOKEN_ENV ?? "HUB_TELEGRAM_TOKEN").trim() || "HUB_TELEGRAM_TOKEN";
-const hubToken = String(process.env[tokenEnvName] ?? "").trim();
+const tokenResolution = resolveHubTelegramToken({
+  env: process.env,
+  envFileValues: config.envFileValues,
+});
+const tokenEnvName = tokenResolution.tokenEnvName;
+const hubToken = tokenResolution.token;
 if (!hubToken) {
   throw new Error(
     [
@@ -17,7 +19,7 @@ if (!hubToken) {
     ].join("\n"),
   );
 }
-if (!TELEGRAM_TOKEN_PATTERN.test(hubToken) || hubToken.toLowerCase().includes("replace_me")) {
+if (!isUsableTelegramToken(hubToken)) {
   throw new Error(
     [
       `Hub Telegram token in ${tokenEnvName} is invalid.`,
@@ -96,6 +98,20 @@ let shuttingDown = false;
 await bootstrap();
 
 async function bootstrap(): Promise<void> {
+  for (const warning of tokenResolution.warnings) {
+    console.warn(`[copilot_hub] ${warning}`);
+  }
+  if (
+    config.envOverrideKeys.includes("HUB_TELEGRAM_TOKEN_ENV") ||
+    config.envOverrideKeys.includes(tokenEnvName)
+  ) {
+    console.warn(
+      `[copilot_hub] Config file '${config.envFilePath ?? ".env"}' overrode a pre-existing process environment value for the hub token settings.`,
+    );
+  }
+  console.log(
+    `[copilot_hub] using hub Telegram token variable '${tokenEnvName}' from ${tokenResolution.source === "env_file" ? "config file" : "process environment"}.`,
+  );
   await runtime.startChannels();
   console.log(`[copilot_hub] online as '${hubId}' on workspace '${hubWorkspaceRoot}'.`);
   registerSignals();

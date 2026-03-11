@@ -34,6 +34,10 @@
       "types": "./dist/config-paths.d.ts",
       "import": "./dist/config-paths.js"
     },
+    "./env-config": {
+      "types": "./dist/env-config.d.ts",
+      "import": "./dist/env-config.js"
+    },
     "./instance-lock": {
       "types": "./dist/instance-lock.d.ts",
       "import": "./dist/instance-lock.js"

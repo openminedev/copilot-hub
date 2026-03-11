@@ -600,6 +600,34 @@ function detectFatalStartupError(ensureResult) {
     };
   }
 
+  const invalidHubTokenLine = findLineContaining(
+    evidenceChunks,
+    (line) => line.includes("hub telegram token in") && line.includes("is invalid"),
+  );
+  if (invalidHubTokenLine) {
+    return {
+      reason: invalidHubTokenLine,
+      action:
+        "Run 'copilot-hub configure' to save a valid hub token in the control-plane config, then retry service.",
+      detectedAt: new Date().toISOString(),
+    };
+  }
+
+  const workspaceRootLine = findLineContaining(
+    evidenceChunks,
+    (line) =>
+      line.includes("default_workspace_root must be outside kernel directory") ||
+      line.includes("hub_workspace_root must be outside kernel directory"),
+  );
+  if (workspaceRootLine) {
+    return {
+      reason: workspaceRootLine,
+      action:
+        "Set DEFAULT_WORKSPACE_ROOT to a folder outside the copilot-hub installation, then retry service.",
+      detectedAt: new Date().toISOString(),
+    };
+  }
+
   return null;
 }
 
