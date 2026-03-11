@@ -14,9 +14,11 @@ export interface LoadedCopilotHubEnvironment {
 export function loadCopilotHubEnvironment({
   env = process.env,
   cwd = process.cwd(),
+  preserveExistingKeys = [],
 }: {
   env?: NodeJS.ProcessEnv;
   cwd?: string;
+  preserveExistingKeys?: Iterable<string>;
 } = {}): LoadedCopilotHubEnvironment {
   const configuredEnvPath = String(env.COPILOT_HUB_ENV_PATH ?? "").trim();
   const resolvedEnvPath = configuredEnvPath ? path.resolve(configuredEnvPath) : "";
@@ -27,7 +29,7 @@ export function loadCopilotHubEnvironment({
     cwd,
   });
   const fileValues = loadEnvFileValues(discoveredEnvPath);
-  const overriddenKeys = applyEnvFileValues(env, fileValues);
+  const overriddenKeys = applyEnvFileValues(env, fileValues, preserveExistingKeys);
 
   if (resolvedEnvPath) {
     env.COPILOT_HUB_ENV_PATH = resolvedEnvPath;
@@ -60,11 +62,21 @@ function loadEnvFileValues(filePath: string): Record<string, string> {
   }
 }
 
-function applyEnvFileValues(env: NodeJS.ProcessEnv, fileValues: Record<string, string>): string[] {
+function applyEnvFileValues(
+  env: NodeJS.ProcessEnv,
+  fileValues: Record<string, string>,
+  preserveExistingKeys: Iterable<string>,
+): string[] {
   const overriddenKeys: string[] = [];
+  const preservedKeys = new Set(
+    [...preserveExistingKeys].map((key) => String(key ?? "").trim()).filter(Boolean),
+  );
 
   for (const [key, value] of Object.entries(fileValues)) {
     const previousValue = String(env[key] ?? "");
+    if (previousValue && preservedKeys.has(key)) {
+      continue;
+    }
     if (previousValue && previousValue !== value) {
       overriddenKeys.push(key);
     }

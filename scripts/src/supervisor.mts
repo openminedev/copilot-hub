@@ -354,6 +354,11 @@ function buildServiceEnvironment(service) {
     BOT_REGISTRY_FILE: service.botRegistryFilePath,
     SECRET_STORE_FILE: service.secretStoreFilePath,
     INSTANCE_LOCK_FILE: service.instanceLockFilePath,
+    ...(service.id === "control-plane"
+      ? {
+          HUB_DATA_DIR: path.join(service.dataDir, "copilot_hub"),
+        }
+      : {}),
   };
 }
 

@@ -2,6 +2,8 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import process from "node:process";
+import { parseEnvMap, readEnvLines, removeEnvKeys, writeEnvLines } from "./env-file-utils.mjs";
 
 export type CopilotHubLayout = {
   homeDir: string;
@@ -60,10 +62,44 @@ export function initializeCopilotHubLayout({
 }: {
   repoRoot: string;
   layout: CopilotHubLayout;
-}): { migratedPaths: string[] } {
+}): { migratedPaths: string[]; normalizedEnvPaths: string[] } {
   ensureCopilotHubLayout(layout);
   const migratedPaths = migrateLegacyLayout({ repoRoot, layout });
-  return { migratedPaths };
+  const normalizedEnvPaths = normalizePersistentEnvFiles(layout);
+  return { migratedPaths, normalizedEnvPaths };
+}
+
+export function resetCopilotHubConfig({ layout }: { layout: CopilotHubLayout }): {
+  removedPaths: string[];
+} {
+  const removedPaths: string[] = [];
+
+  for (const target of [layout.configDir, layout.dataDir, layout.logsDir]) {
+    if (!fs.existsSync(target)) {
+      continue;
+    }
+    fs.rmSync(target, { recursive: true, force: true });
+    removedPaths.push(target);
+  }
+
+  const runtimeTargets = [
+    path.join(layout.runtimeDir, "pids"),
+    path.join(layout.runtimeDir, "services"),
+    path.join(layout.runtimeDir, "last-startup-error.json"),
+    layout.servicePromptStatePath,
+  ];
+  for (const target of runtimeTargets) {
+    if (!fs.existsSync(target)) {
+      continue;
+    }
+    fs.rmSync(target, { recursive: true, force: true });
+    removedPaths.push(target);
+  }
+
+  ensureCopilotHubLayout(layout);
+  return {
+    removedPaths: removedPaths.sort(),
+  };
 }
 
 export function ensureCopilotHubLayout(layout: CopilotHubLayout): void {
@@ -137,6 +173,132 @@ function migrateLegacyLayout({
   return migratedPaths;
 }
 
+function normalizePersistentEnvFiles(layout: CopilotHubLayout): string[] {
+  const normalizedPaths: string[] = [];
+
+  if (
+    normalizePersistentEnvFile(layout.agentEngineEnvPath, [
+      {
+        key: "BOT_DATA_DIR",
+        legacyValues: ["./data"],
+        wrongResolvedPath: path.join(layout.configDir, "data"),
+      },
+      {
+        key: "BOT_REGISTRY_FILE",
+        legacyValues: ["./data/bot-registry.json"],
+        wrongResolvedPath: path.join(layout.configDir, "data", "bot-registry.json"),
+      },
+      {
+        key: "SECRET_STORE_FILE",
+        legacyValues: ["./data/secrets.json"],
+        wrongResolvedPath: path.join(layout.configDir, "data", "secrets.json"),
+      },
+      {
+        key: "INSTANCE_LOCK_FILE",
+        legacyValues: ["./data/runtime.lock"],
+        wrongResolvedPath: path.join(layout.configDir, "data", "runtime.lock"),
+      },
+    ])
+  ) {
+    normalizedPaths.push(layout.agentEngineEnvPath);
+  }
+
+  if (
+    normalizePersistentEnvFile(layout.controlPlaneEnvPath, [
+      {
+        key: "BOT_DATA_DIR",
+        legacyValues: ["./data"],
+        wrongResolvedPath: path.join(layout.configDir, "data"),
+      },
+      {
+        key: "BOT_REGISTRY_FILE",
+        legacyValues: ["./data/bot-registry.json"],
+        wrongResolvedPath: path.join(layout.configDir, "data", "bot-registry.json"),
+      },
+      {
+        key: "SECRET_STORE_FILE",
+        legacyValues: ["./data/secrets.json"],
+        wrongResolvedPath: path.join(layout.configDir, "data", "secrets.json"),
+      },
+      {
+        key: "INSTANCE_LOCK_FILE",
+        legacyValues: ["./data/runtime.lock"],
+        wrongResolvedPath: path.join(layout.configDir, "data", "runtime.lock"),
+      },
+      {
+        key: "HUB_DATA_DIR",
+        legacyValues: ["./data/copilot_hub"],
+        wrongResolvedPath: path.join(layout.configDir, "data", "copilot_hub"),
+      },
+    ])
+  ) {
+    normalizedPaths.push(layout.controlPlaneEnvPath);
+  }
+
+  return normalizedPaths.sort();
+}
+
+function normalizePersistentEnvFile(
+  filePath: string,
+  rules: Array<{ key: string; legacyValues: string[]; wrongResolvedPath: string }>,
+): boolean {
+  if (!fs.existsSync(filePath)) {
+    return false;
+  }
+
+  const lines = readEnvLines(filePath);
+  const envMap = parseEnvMap(lines);
+  const keysToRemove = rules
+    .filter((rule) =>
+      shouldRemoveLegacyManagedPath(envMap[rule.key], {
+        legacyValues: rule.legacyValues,
+        wrongResolvedPath: rule.wrongResolvedPath,
+        configBaseDir: path.dirname(filePath),
+      }),
+    )
+    .map((rule) => rule.key);
+
+  if (keysToRemove.length === 0) {
+    return false;
+  }
+
+  removeEnvKeys(lines, keysToRemove);
+  writeEnvLines(filePath, lines);
+  return true;
+}
+
+function shouldRemoveLegacyManagedPath(
+  rawValue: string | undefined,
+  {
+    legacyValues,
+    wrongResolvedPath,
+    configBaseDir,
+  }: {
+    legacyValues: string[];
+    wrongResolvedPath: string;
+    configBaseDir: string;
+  },
+): boolean {
+  const value = String(rawValue ?? "").trim();
+  if (!value) {
+    return false;
+  }
+
+  const normalizedValue = normalizeForCompare(value);
+  if (legacyValues.some((entry) => normalizeForCompare(entry) === normalizedValue)) {
+    return true;
+  }
+
+  if (path.isAbsolute(value)) {
+    return normalizeForCompare(value) === normalizeForCompare(wrongResolvedPath);
+  }
+
+  return (
+    normalizeForCompare(path.resolve(configBaseDir, value)) ===
+    normalizeForCompare(wrongResolvedPath)
+  );
+}
+
 function resolveLegacyPaths(repoRoot: string): {
   agentEngineEnvPath: string;
   controlPlaneEnvPath: string;
@@ -193,6 +355,14 @@ function directoryHasEntries(directoryPath: string): boolean {
 function normalizePath(value: unknown, pathApi: typeof path.posix | typeof path.win32): string {
   const normalized = String(value ?? "").trim();
   return normalized ? pathApi.resolve(normalized) : "";
+}
+
+function normalizeForCompare(value: unknown): string {
+  const normalized = String(value ?? "").trim();
+  if (!normalized) {
+    return "";
+  }
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
 }
 
 function getPathApi(platform: NodeJS.Platform): typeof path.posix | typeof path.win32 {

@@ -7,7 +7,11 @@ import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { spawnCodexSync } from "./codex-spawn.mjs";
 import { codexInstallPackageSpec } from "./codex-version.mjs";
-import { initializeCopilotHubLayout, resolveCopilotHubLayout } from "./install-layout.mjs";
+import {
+  initializeCopilotHubLayout,
+  resetCopilotHubConfig,
+  resolveCopilotHubLayout,
+} from "./install-layout.mjs";
 import {
   buildCodexCompatibilityError,
   buildCodexCompatibilityNotice,
@@ -35,6 +39,7 @@ const rawArgs = process.argv
   .filter(Boolean);
 const wantsVersion = rawArgs.includes("--version") || rawArgs.includes("-v");
 const wantsHelp = rawArgs.includes("--help") || rawArgs.includes("-h");
+const wantsYes = rawArgs.includes("--yes") || rawArgs.includes("-y");
 
 const action = String(rawArgs[0] ?? "start")
   .trim()
@@ -106,6 +111,13 @@ async function main() {
       runNode(["scripts/dist/configure.mjs"]);
       return;
     }
+    case "reset-config":
+    case "reset_config": {
+      await resetConfig({
+        force: wantsYes,
+      });
+      return;
+    }
     case "service": {
       const serviceAction = String(rawArgs[1] ?? "")
         .trim()
@@ -124,6 +136,56 @@ async function main() {
       process.exit(1);
     }
   }
+}
+
+async function resetConfig({ force }: { force: boolean }): Promise<void> {
+  if (!force) {
+    if (!process.stdin.isTTY) {
+      throw new Error(
+        "reset-config requires confirmation. Re-run with '--yes' in non-interactive mode.",
+      );
+    }
+
+    const rl = createInterface({ input, output });
+    try {
+      const confirmed = await askYesNo(
+        rl,
+        [
+          "Reset Copilot Hub config and runtime state?",
+          "This removes persisted config, bot registry, secrets, logs, and runtime state.",
+          "Agent workspaces are kept.",
+        ].join(" "),
+        false,
+      );
+      if (!confirmed) {
+        console.log("Reset canceled.");
+        return;
+      }
+    } finally {
+      rl.close();
+    }
+  }
+
+  if (isServiceAlreadyInstalled()) {
+    runNodeCapture(["scripts/dist/service.mjs", "stop"], "inherit");
+  } else {
+    runNodeCapture(["scripts/dist/supervisor.mjs", "down"], "inherit");
+  }
+
+  const reset = resetCopilotHubConfig({ layout });
+  initializeCopilotHubLayout({ repoRoot, layout });
+
+  console.log("Copilot Hub config reset completed.");
+  if (reset.removedPaths.length > 0) {
+    console.log("Removed:");
+    for (const removedPath of reset.removedPaths) {
+      console.log(`- ${removedPath}`);
+    }
+  }
+  console.log("Kept:");
+  console.log("- package installation");
+  console.log("- external workspaces (for example Desktop/copilot_workspaces)");
+  console.log("Next step: run 'copilot-hub configure' then 'copilot-hub start'.");
 }
 
 function runNode(scriptArgs) {
@@ -577,6 +639,8 @@ function printUsage() {
   console.log(
     [
       "Usage: node scripts/dist/cli.mjs <start|stop|restart|status|logs|configure|service|version|help>",
+      "Reset persistent state:",
+      "  node scripts/dist/cli.mjs reset-config [--yes]",
       "Service management:",
       "  node scripts/dist/cli.mjs service <install|uninstall|status|start|stop|help>",
     ].join("\n"),

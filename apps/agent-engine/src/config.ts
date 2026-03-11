@@ -196,6 +196,13 @@ export const config = {
 function loadEnvironment() {
   return loadCopilotHubEnvironment({
     cwd: process.cwd(),
+    preserveExistingKeys: [
+      "BOT_DATA_DIR",
+      "BOT_REGISTRY_FILE",
+      "SECRET_STORE_FILE",
+      "INSTANCE_LOCK_FILE",
+      "COPILOT_HUB_HOME_DIR",
+    ],
   });
 }
 

@@ -1,6 +1,6 @@
 {
   "name": "copilot-hub",
-  "version": "0.1.29",
+  "version": "0.1.30",
   "description": "Copilot Hub CLI and runtime bundle",
   "license": "MIT",
   "repository": {
@@ -58,6 +58,7 @@
     "status": "npm run build:scripts --silent && node scripts/dist/cli.mjs status",
     "logs": "npm run build:scripts --silent && node scripts/dist/cli.mjs logs",
     "configure": "npm run build:scripts --silent && node scripts/dist/cli.mjs configure",
+    "reset-config": "npm run build:scripts --silent && node scripts/dist/cli.mjs reset-config",
     "test:scripts": "npm run build:scripts --silent && node --test scripts/test/*.test.mjs",
     "test": "npm run test:scripts && npm run test --workspaces --if-present",
     "lint": "eslint .",

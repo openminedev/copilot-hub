@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import {
   initializeCopilotHubLayout,
+  resetCopilotHubConfig,
   resolveCopilotHubHomeDir,
   resolveCopilotHubLayout,
 } from "../dist/install-layout.mjs";
@@ -45,8 +46,16 @@ test("initializeCopilotHubLayout migrates legacy env and data files once", () =>
   fs.mkdirSync(path.dirname(legacyControlEnvPath), { recursive: true });
   fs.mkdirSync(path.dirname(legacyEngineDataFile), { recursive: true });
   fs.mkdirSync(path.dirname(legacyPromptStatePath), { recursive: true });
-  fs.writeFileSync(legacyEngineEnvPath, "TELEGRAM_TOKEN_AGENT_1=123:abc\n", "utf8");
-  fs.writeFileSync(legacyControlEnvPath, "HUB_TELEGRAM_TOKEN=456:def\n", "utf8");
+  fs.writeFileSync(
+    legacyEngineEnvPath,
+    ["TELEGRAM_TOKEN_AGENT_1=123:abc", "BOT_REGISTRY_FILE=./data/bot-registry.json", ""].join("\n"),
+    "utf8",
+  );
+  fs.writeFileSync(
+    legacyControlEnvPath,
+    ["HUB_TELEGRAM_TOKEN=456:def", "HUB_DATA_DIR=./data/copilot_hub", ""].join("\n"),
+    "utf8",
+  );
   fs.writeFileSync(legacyEngineDataFile, '{"ok":true}\n', "utf8");
   fs.writeFileSync(legacyEngineLockPath, "stale-lock\n", "utf8");
   fs.writeFileSync(legacyPromptStatePath, '{"decision":"accepted"}\n', "utf8");
@@ -79,4 +88,47 @@ test("initializeCopilotHubLayout migrates legacy env and data files once", () =>
 
   const secondPass = initializeCopilotHubLayout({ repoRoot, layout });
   assert.deepEqual(secondPass.migratedPaths, []);
+  assert.deepEqual(secondPass.normalizedEnvPaths, []);
+});
+
+test("resetCopilotHubConfig removes persisted state but keeps the layout shell", () => {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "copilot-hub-reset-"));
+  const layout = resolveCopilotHubLayout({
+    repoRoot,
+    env: {
+      COPILOT_HUB_HOME_DIR: path.join(repoRoot, "user-home"),
+    },
+    homeDirectory: repoRoot,
+  });
+
+  initializeCopilotHubLayout({ repoRoot, layout });
+  fs.writeFileSync(layout.agentEngineEnvPath, "TELEGRAM_TOKEN_AGENT_1=123:abc\n", "utf8");
+  fs.mkdirSync(layout.agentEngineDataDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(layout.agentEngineDataDir, "bot-registry.json"),
+    '{"version":3}\n',
+    "utf8",
+  );
+  fs.mkdirSync(path.join(layout.runtimeDir, "pids"), { recursive: true });
+  fs.writeFileSync(path.join(layout.runtimeDir, "pids", "daemon.json"), '{"pid":1}\n', "utf8");
+  fs.writeFileSync(layout.servicePromptStatePath, '{"decision":"accepted"}\n', "utf8");
+  fs.writeFileSync(
+    path.join(layout.runtimeDir, "windows-daemon-launcher.vbs"),
+    "' launcher\n",
+    "utf8",
+  );
+
+  const reset = resetCopilotHubConfig({ layout });
+
+  assert.ok(reset.removedPaths.includes(layout.configDir));
+  assert.ok(reset.removedPaths.includes(layout.dataDir));
+  assert.ok(reset.removedPaths.includes(layout.logsDir));
+  assert.ok(fs.existsSync(layout.configDir));
+  assert.ok(fs.existsSync(layout.dataDir));
+  assert.ok(fs.existsSync(layout.logsDir));
+  assert.equal(fs.existsSync(layout.agentEngineEnvPath), false);
+  assert.equal(fs.existsSync(path.join(layout.agentEngineDataDir, "bot-registry.json")), false);
+  assert.equal(fs.existsSync(path.join(layout.runtimeDir, "pids")), false);
+  assert.equal(fs.existsSync(layout.servicePromptStatePath), false);
+  assert.equal(fs.existsSync(path.join(layout.runtimeDir, "windows-daemon-launcher.vbs")), true);
 });

@@ -4,6 +4,7 @@ import path from "node:path";
 import process, { stdin as input, stdout as output } from "node:process";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline/promises";
+import { parseEnvMap, readEnvLines, setEnvValue, writeEnvLines } from "./env-file-utils.mjs";
 import { initializeCopilotHubLayout, resolveCopilotHubLayout } from "./install-layout.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -30,8 +31,8 @@ async function main() {
   ensureEnvFile(engineEnvPath, engineExamplePath);
   ensureEnvFile(controlPlaneEnvPath, controlPlaneExamplePath);
 
-  const engineLines = readLines(engineEnvPath);
-  const controlPlaneLines = readLines(controlPlaneEnvPath);
+  const engineLines = readEnvLines(engineEnvPath);
+  const controlPlaneLines = readEnvLines(controlPlaneEnvPath);
 
   const rl = createInterface({ input, output });
 
@@ -49,8 +50,8 @@ async function main() {
     rl.close();
   }
 
-  writeLines(engineEnvPath, engineLines);
-  writeLines(controlPlaneEnvPath, controlPlaneLines);
+  writeEnvLines(engineEnvPath, engineLines);
+  writeEnvLines(controlPlaneEnvPath, controlPlaneLines);
 }
 
 async function configureRequiredTokens({ rl, controlPlaneLines }) {
@@ -132,78 +133,9 @@ function ensureEnvFile(envPath, examplePath) {
   fs.writeFileSync(envPath, "", "utf8");
 }
 
-function readLines(filePath) {
-  const content = fs.readFileSync(filePath, "utf8");
-  return content.split(/\r?\n/);
-}
-
-function writeLines(filePath, lines) {
-  const normalized = [...lines];
-  if (normalized.length === 0 || normalized[normalized.length - 1] !== "") {
-    normalized.push("");
-  }
-  fs.writeFileSync(filePath, normalized.join("\n"), "utf8");
-}
-
-function parseEnvMap(lines) {
-  const map: Record<string, string> = {};
-  for (const line of lines) {
-    const match = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/);
-    if (!match) {
-      continue;
-    }
-
-    const key = match[1];
-    const value = unquote(match[2] ?? "");
-    map[key] = value;
-  }
-  return map;
-}
-
-function setEnvValue(lines, key, value) {
-  const safeValue = sanitizeValue(value);
-  const pattern = new RegExp(`^\\s*${escapeRegex(key)}\\s*=`);
-  for (let index = 0; index < lines.length; index += 1) {
-    if (!pattern.test(lines[index])) {
-      continue;
-    }
-
-    lines[index] = `${key}=${safeValue}`;
-    return;
-  }
-
-  if (lines.length > 0 && lines[lines.length - 1] !== "") {
-    lines.push("");
-  }
-  lines.push(`${key}=${safeValue}`);
-}
-
-function sanitizeValue(value) {
-  return String(value ?? "")
-    .replace(/[\r\n]/g, "")
-    .trim();
-}
-
-function unquote(value) {
-  const raw = String(value ?? "").trim();
-  if (!raw) {
-    return "";
-  }
-
-  if ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'"))) {
-    return raw.slice(1, -1);
-  }
-
-  return raw;
-}
-
 function nonEmpty(value, fallback) {
   const normalized = String(value ?? "").trim();
   return normalized || fallback;
-}
-
-function escapeRegex(value) {
-  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 async function askRequired(rl, label) {
