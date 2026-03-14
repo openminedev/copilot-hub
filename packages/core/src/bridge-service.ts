@@ -1,6 +1,8 @@
+import { normalizeTimeout } from "./codex-app-utils.js";
 import { normalizeThreadId } from "./thread-id.js";
 
 const DEFAULT_MAX_MESSAGES = 200;
+const DEFAULT_TURN_ACTIVITY_TIMEOUT_MS = 3_600_000;
 
 type MessageSource = "web" | "telegram" | "internal";
 
@@ -110,7 +112,10 @@ export class ConversationEngine {
     this.store = store;
     this.assistantProvider = assistantProvider;
     this.projectRoot = projectRoot;
-    this.turnActivityTimeoutMs = Number.parseInt(String(turnActivityTimeoutMs), 10) || 3_600_000;
+    this.turnActivityTimeoutMs = normalizeTimeout(
+      turnActivityTimeoutMs,
+      DEFAULT_TURN_ACTIVITY_TIMEOUT_MS,
+    );
     this.maxMessages = maxMessages;
     this.queueByThread = new Map();
     this.threadByProviderSession = new Map();

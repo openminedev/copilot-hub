@@ -221,6 +221,7 @@ export class BotRuntime {
   telegramError: string | null;
   webPublicBaseUrl: string;
   initPromise: Promise<void> | null;
+  providerRefreshPromise: Promise<void> | null;
 
   constructor({
     botConfig,
@@ -268,6 +269,7 @@ export class BotRuntime {
     this.telegramError = null;
     this.webPublicBaseUrl = "http://127.0.0.1:8787";
     this.initPromise = null;
+    this.providerRefreshPromise = null;
   }
 
   get id(): string {
@@ -539,10 +541,20 @@ export class BotRuntime {
       ...(Array.isArray(inputItemsRaw) ? { inputItems: inputItemsRaw } : {}),
     };
 
-    const result = (await this.#requireEngine().sendTurn(sendPayload)) as {
-      threadId: string;
-      assistantText: string;
-    } & Record<string, unknown>;
+    let result: ({ threadId: string; assistantText: string } & Record<string, unknown>) | null =
+      null;
+    try {
+      result = (await this.#requireEngine().sendTurn(sendPayload)) as {
+        threadId: string;
+        assistantText: string;
+      } & Record<string, unknown>;
+    } catch (error) {
+      await this.#recoverProviderSessionAfterTurnError(error);
+      throw error;
+    }
+    if (!result) {
+      throw new Error("Conversation engine returned no turn result.");
+    }
     await capabilityManager.runHook("onTurnResult", {
       threadId: sendPayload.threadId,
       prompt: sendPayload.prompt,
@@ -758,28 +770,77 @@ export class BotRuntime {
     });
   }
 
-  async #recreateProviderSession(): Promise<void> {
-    await this.ensureInitialized();
-
-    const previousEngine = this.engine;
-    const previousProvider = this.provider;
-    this.engine = null;
-    this.provider = null;
-
-    if (previousEngine) {
-      await previousEngine.shutdown();
-    } else if (previousProvider) {
-      await previousProvider.shutdown();
+  async #recoverProviderSessionAfterTurnError(error: unknown): Promise<void> {
+    if (!shouldRecoverProviderSessionAfterTurnError(error)) {
+      return;
     }
 
-    this.provider = this.#createProvider();
-    this.engine = this.#createConversationEngine(this.provider);
-    await this.#requireStore().ensureThread(this.webThreadId);
+    try {
+      await this.#recreateProviderSession();
+    } catch (refreshError) {
+      console.error(
+        `[${this.id}] provider session recovery failed after turn error: ${sanitizeError(refreshError)}`,
+      );
+    }
+  }
+
+  async #recreateProviderSession(): Promise<void> {
+    if (this.providerRefreshPromise) {
+      await this.providerRefreshPromise;
+      return;
+    }
+
+    this.providerRefreshPromise = (async () => {
+      await this.ensureInitialized();
+
+      const previousEngine = this.engine;
+      const previousProvider = this.provider;
+      this.engine = null;
+      this.provider = null;
+
+      if (previousEngine) {
+        await previousEngine.shutdown();
+      } else if (previousProvider) {
+        await previousProvider.shutdown();
+      }
+
+      this.provider = this.#createProvider();
+      this.engine = this.#createConversationEngine(this.provider);
+      await this.#requireStore().ensureThread(this.webThreadId);
+    })();
+
+    try {
+      await this.providerRefreshPromise;
+    } finally {
+      this.providerRefreshPromise = null;
+    }
   }
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+}
+
+function sanitizeError(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  return raw.split(/\r?\n/).slice(0, 12).join("\n");
+}
+
+function shouldRecoverProviderSessionAfterTurnError(error: unknown): boolean {
+  const normalized = sanitizeError(error).trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+
+  return (
+    normalized.includes("inactive for") ||
+    normalized.includes("process stopped while waiting for turn completion") ||
+    normalized.includes("codex app-server process stopped") ||
+    normalized.includes("codex app-server exited with code") ||
+    normalized.includes("request 'turn/start' timed out") ||
+    normalized.includes("request 'thread/resume' timed out") ||
+    normalized.includes("request 'thread/start' timed out")
+  );
 }
 
 function normalizeRuntimeConfig(botConfig: RuntimeBotConfigInput): RuntimeConfig {
