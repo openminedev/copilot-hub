@@ -5,6 +5,7 @@ import process from "node:process";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { initializeCopilotHubLayout, resolveCopilotHubLayout } from "./install-layout.mjs";
+import { isManagedProcessRunning, isProcessRunning, normalizePid } from "./process-identity.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -121,7 +122,7 @@ function showStatus() {
   for (const service of SERVICES) {
     const state = readState(service);
     const pid = normalizePid(state?.pid);
-    const running = pid > 0 && isProcessRunning(pid);
+    const running = pid > 0 && isManagedProcessRunning(state);
 
     if (state && !running) {
       removeState(service);
@@ -147,7 +148,7 @@ async function startService(service, options: { suppressAlreadyRunning?: boolean
   const suppressAlreadyRunning = options?.suppressAlreadyRunning === true;
   const existing = readState(service);
   const existingPid = normalizePid(existing?.pid);
-  if (existingPid > 0 && isProcessRunning(existingPid)) {
+  if (existingPid > 0 && isManagedProcessRunning(existing)) {
     if (!suppressAlreadyRunning) {
       console.log(`[${service.id}] already running (pid ${existingPid})`);
     }
@@ -188,11 +189,13 @@ async function startService(service, options: { suppressAlreadyRunning?: boolean
     pid,
     startedAt: new Date().toISOString(),
     command: `${process.execPath} ${service.entryScript}`,
+    executablePath: process.execPath,
+    entryScript: service.entryScript,
   });
 
   await sleep(250);
 
-  if (!isProcessRunning(pid)) {
+  if (!isManagedProcessRunning(readState(service))) {
     removeState(service);
     console.error(`[${service.id}] exited immediately. Check logs: ${service.logFile}`);
     return false;
@@ -216,7 +219,7 @@ async function stopService(service) {
     return;
   }
 
-  if (!isProcessRunning(pid)) {
+  if (!isManagedProcessRunning(state)) {
     removeState(service);
     console.log(`[${service.id}] not running (stale pid ${pid})`);
     return;
@@ -308,30 +311,6 @@ function writeState(service, state) {
 function removeState(service) {
   if (fs.existsSync(service.pidFile)) {
     fs.rmSync(service.pidFile, { force: true });
-  }
-}
-
-function normalizePid(value) {
-  const pid = Number.parseInt(String(value ?? ""), 10);
-  if (!Number.isFinite(pid) || pid <= 0) {
-    return 0;
-  }
-  return pid;
-}
-
-function isProcessRunning(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) {
-    return false;
-  }
-
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    if (error && typeof error === "object" && "code" in error && error.code === "EPERM") {
-      return true;
-    }
-    return false;
   }
 }
 

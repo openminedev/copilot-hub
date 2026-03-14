@@ -7,6 +7,7 @@ import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { codexInstallPackageSpec } from "./codex-version.mjs";
 import { initializeCopilotHubLayout, resolveCopilotHubLayout } from "./install-layout.mjs";
+import { isManagedProcessRunning, isProcessRunning, normalizePid } from "./process-identity.mjs";
 import {
   buildCodexCompatibilityError,
   probeCodexVersion,
@@ -147,6 +148,8 @@ async function runDaemonLoop() {
     pid: process.pid,
     startedAt: new Date().toISOString(),
     command: `${nodeBin} ${daemonScriptPath} run`,
+    executablePath: nodeBin,
+    entryScript: daemonScriptPath,
   });
 
   const state = { stopping: false, shuttingDown: false };
@@ -227,8 +230,9 @@ async function stopDaemonProcess() {
     return;
   }
 
+  const state = readDaemonState();
   await terminateProcess(pid);
-  if (isProcessRunning(pid)) {
+  if (isManagedProcessRunning(state)) {
     throw new Error(`Daemon did not stop cleanly (pid ${pid}).`);
   }
 
@@ -336,7 +340,7 @@ function getRunningDaemonPid() {
   if (pid <= 0) {
     return 0;
   }
-  return isProcessRunning(pid) ? pid : 0;
+  return isManagedProcessRunning(state) ? pid : 0;
 }
 
 function readDaemonState() {
@@ -360,29 +364,6 @@ function removeDaemonState() {
     return;
   }
   fs.rmSync(daemonStatePath, { force: true });
-}
-
-function normalizePid(value) {
-  const pid = Number.parseInt(String(value ?? ""), 10);
-  if (!Number.isFinite(pid) || pid <= 0) {
-    return 0;
-  }
-  return pid;
-}
-
-function isProcessRunning(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) {
-    return false;
-  }
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    if (error && typeof error === "object" && "code" in error && error.code === "EPERM") {
-      return true;
-    }
-    return false;
-  }
 }
 
 async function terminateProcess(pid) {
