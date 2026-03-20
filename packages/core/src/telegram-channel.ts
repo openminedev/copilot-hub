@@ -90,7 +90,11 @@ type CodexUsageSnapshot = {
 } | null;
 
 const CODEX_USAGE_CACHE_TTL_MS = 60_000;
+const TELEGRAM_POLLING_RETRY_BASE_MS = 1_000;
+const TELEGRAM_POLLING_RETRY_MAX_MS = 30_000;
 let cachedCodexUsage: { expiresAt: number; snapshot: CodexUsageSnapshot } | null = null;
+
+type TelegramBotFactory = (token: string) => Bot<Context>;
 
 export function invalidateCodexQuotaUsageCache(): void {
   cachedCodexUsage = null;
@@ -108,13 +112,24 @@ export class TelegramChannel {
   activeTurnsByChat: Map<string, ActiveTurn>;
   turnControlByChat: Map<string, TurnControlState>;
   nextTurnToken: number;
+  botFactory: TelegramBotFactory;
+  pollingLoopPromise: Promise<void> | null;
+  stopRequested: boolean;
+  pollingRetryBaseMs: number;
+  pollingRetryMaxMs: number;
 
   constructor({
     channelConfig,
     runtime,
+    internals = {},
   }: {
     channelConfig: TelegramChannelConfig;
     runtime: unknown;
+    internals?: {
+      createBot?: TelegramBotFactory;
+      pollingRetryBaseMs?: number;
+      pollingRetryMaxMs?: number;
+    };
   }) {
     this.kind = "telegram";
     this.id = String(channelConfig.id ?? "telegram");
@@ -127,10 +142,22 @@ export class TelegramChannel {
     this.activeTurnsByChat = new Map();
     this.turnControlByChat = new Map();
     this.nextTurnToken = 1;
+    this.botFactory =
+      typeof internals.createBot === "function" ? internals.createBot : (token) => new Bot(token);
+    this.pollingLoopPromise = null;
+    this.stopRequested = false;
+    this.pollingRetryBaseMs = normalizeRetryDelay(
+      internals.pollingRetryBaseMs,
+      TELEGRAM_POLLING_RETRY_BASE_MS,
+    );
+    this.pollingRetryMaxMs = Math.max(
+      this.pollingRetryBaseMs,
+      normalizeRetryDelay(internals.pollingRetryMaxMs, TELEGRAM_POLLING_RETRY_MAX_MS),
+    );
   }
 
   async start(): Promise<{ kind: string; id: string; running: boolean; error: string | null }> {
-    if (this.running) {
+    if (this.running || this.pollingLoopPromise) {
       return this.getStatus();
     }
 
@@ -139,37 +166,26 @@ export class TelegramChannel {
       throw new Error(`Telegram token is missing for channel '${this.id}'.`);
     }
 
-    const bot = new Bot(token);
-    this.#attachHandlers(bot);
+    this.stopRequested = false;
     this.error = null;
-    this.running = true;
-    this.bot = bot;
-
-    void bot
-      .start({
-        onStart: () => {
-          console.log(`[${this.runtime.runtimeId}:${this.id}] Telegram polling started.`);
-        },
-      })
-      .catch((error) => {
-        this.error = sanitizeError(error);
-        this.running = false;
-        this.bot = null;
-        console.error(
-          `[${this.runtime.runtimeId}:${this.id}] Telegram polling error: ${this.error}`,
-        );
-      });
+    this.#ensurePollingLoop();
 
     return this.getStatus();
   }
 
   async stop(): Promise<{ kind: string; id: string; running: boolean; error: string | null }> {
+    this.stopRequested = true;
     if (this.bot) {
       try {
         this.bot.stop();
       } catch {
         // Ignore stop errors.
       }
+    }
+    if (this.pollingLoopPromise) {
+      await this.pollingLoopPromise.catch(() => {
+        // Best effort shutdown only.
+      });
     }
     this.bot = null;
     this.running = false;
@@ -214,6 +230,84 @@ export class TelegramChannel {
     lines.push(`Use: /approve ${approval.id} or /deny ${approval.id}`);
 
     await sendChunkedMessage(this.bot.api, chatId, lines.join("\n"));
+  }
+
+  #ensurePollingLoop(): void {
+    if (this.pollingLoopPromise) {
+      return;
+    }
+
+    this.pollingLoopPromise = this.#runPollingLoop().finally(() => {
+      this.pollingLoopPromise = null;
+      this.running = false;
+      this.bot = null;
+    });
+  }
+
+  async #runPollingLoop(): Promise<void> {
+    let attempt = 0;
+
+    while (!this.stopRequested) {
+      const token = String(this.config.token ?? "").trim();
+      if (!token) {
+        this.error = `Telegram token is missing for channel '${this.id}'.`;
+        return;
+      }
+
+      const bot = this.botFactory(token);
+      this.#attachHandlers(bot);
+      this.bot = bot;
+      this.running = true;
+      this.error = null;
+
+      try {
+        await bot.start({
+          onStart: () => {
+            attempt = 0;
+            this.error = null;
+            console.log(`[${this.runtime.runtimeId}:${this.id}] Telegram polling started.`);
+          },
+        });
+
+        if (this.stopRequested) {
+          return;
+        }
+
+        this.error = "Telegram polling stopped unexpectedly.";
+        console.error(
+          `[${this.runtime.runtimeId}:${this.id}] Telegram polling stopped unexpectedly.`,
+        );
+      } catch (error) {
+        if (this.stopRequested) {
+          return;
+        }
+
+        this.error = sanitizeError(error);
+        console.error(
+          `[${this.runtime.runtimeId}:${this.id}] Telegram polling error: ${this.error}`,
+        );
+      } finally {
+        if (this.bot === bot) {
+          this.bot = null;
+        }
+        this.running = false;
+      }
+
+      if (this.stopRequested) {
+        return;
+      }
+
+      const delayMs = computePollingRetryDelay(
+        attempt,
+        this.pollingRetryBaseMs,
+        this.pollingRetryMaxMs,
+      );
+      attempt += 1;
+      console.warn(
+        `[${this.runtime.runtimeId}:${this.id}] Telegram polling retry in ${Math.ceil(delayMs / 1000)}s.`,
+      );
+      await waitForPollingRetry(delayMs, () => this.stopRequested);
+    }
   }
 
   #attachHandlers(bot: Bot): void {
@@ -1599,4 +1693,36 @@ function clampPercent(value: number): number {
     return 100;
   }
   return n;
+}
+
+function computePollingRetryDelay(attempt: number, baseMs: number, maxMs: number): number {
+  const safeAttempt = Number.isFinite(attempt) && attempt > 0 ? Math.floor(attempt) : 0;
+  const safeBase = normalizeRetryDelay(baseMs, TELEGRAM_POLLING_RETRY_BASE_MS);
+  const safeMax = Math.max(safeBase, normalizeRetryDelay(maxMs, TELEGRAM_POLLING_RETRY_MAX_MS));
+  return Math.min(safeMax, safeBase * 2 ** safeAttempt);
+}
+
+async function waitForPollingRetry(delayMs: number, shouldStop: () => boolean): Promise<void> {
+  const remaining = Number.isFinite(delayMs) && delayMs > 0 ? Math.floor(delayMs) : 0;
+  const startedAt = Date.now();
+  while (!shouldStop()) {
+    const elapsed = Date.now() - startedAt;
+    if (elapsed >= remaining) {
+      return;
+    }
+    const slice = Math.min(250, remaining - elapsed);
+    await sleep(slice);
+  }
+}
+
+function normalizeRetryDelay(value: unknown, fallback: number): number {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return fallback;
+  }
+  return parsed;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
