@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 
+export const WINDOWS_HIDDEN_LAUNCHER_RESTART_DELAY_MS = 5_000;
+
 export function resolveWindowsScriptHost(env: NodeJS.ProcessEnv = process.env): string {
   const systemRoot = String(env.SystemRoot ?? env.SYSTEMROOT ?? "C:\\Windows").trim();
   const baseDir = systemRoot || "C:\\Windows";
@@ -9,6 +11,10 @@ export function resolveWindowsScriptHost(env: NodeJS.ProcessEnv = process.env): 
 
 export function getWindowsHiddenLauncherScriptPath(runtimeDir: string): string {
   return path.win32.join(runtimeDir, "windows-daemon-launcher.vbs");
+}
+
+export function getWindowsHiddenLauncherStopSignalPath(runtimeDir: string): string {
+  return path.win32.join(runtimeDir, "windows-daemon-launcher.stop");
 }
 
 export function ensureWindowsHiddenLauncher({
@@ -60,13 +66,34 @@ export function buildWindowsHiddenLauncherContent({
   daemonScriptPath: string;
   runtimeDir: string;
 }): string {
-  const command = buildWindowsCommandLine([nodeBin, daemonScriptPath, "start"]);
+  const command = buildWindowsCommandLine([nodeBin, daemonScriptPath, "run"]);
+  const stopSignalPath = getWindowsHiddenLauncherStopSignalPath(runtimeDir);
   return [
     "Option Explicit",
-    "Dim shell",
+    "Dim shell, fso, command, stopSignalPath, restartDelayMs",
     'Set shell = CreateObject("WScript.Shell")',
+    'Set fso = CreateObject("Scripting.FileSystemObject")',
     `shell.CurrentDirectory = "${escapeVbsString(runtimeDir)}"`,
-    `shell.Run "${escapeVbsString(command)}", 0, False`,
+    `command = "${escapeVbsString(command)}"`,
+    `stopSignalPath = "${escapeVbsString(stopSignalPath)}"`,
+    `restartDelayMs = ${String(WINDOWS_HIDDEN_LAUNCHER_RESTART_DELAY_MS)}`,
+    "Do",
+    "  If fso.FileExists(stopSignalPath) Then",
+    "    On Error Resume Next",
+    "    fso.DeleteFile stopSignalPath, True",
+    "    On Error GoTo 0",
+    "    Exit Do",
+    "  End If",
+    "  shell.Run command, 0, True",
+    "  If fso.FileExists(stopSignalPath) Then",
+    "    On Error Resume Next",
+    "    fso.DeleteFile stopSignalPath, True",
+    "    On Error GoTo 0",
+    "    Exit Do",
+    "  End If",
+    "  WScript.Sleep restartDelayMs",
+    "Loop",
+    "Set fso = Nothing",
     "Set shell = Nothing",
     "",
   ].join("\r\n");

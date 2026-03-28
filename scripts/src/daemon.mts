@@ -207,9 +207,7 @@ async function runDaemonLoop() {
 
     failureCount += 1;
     const delay = computeBackoffDelay(failureCount);
-    const reason =
-      firstLine(ensureResult.combinedOutput) ||
-      `supervisor ensure exited with code ${String(ensureResult.status ?? "unknown")}`;
+    const reason = formatRunCheckedFailureReason(ensureResult, "supervisor ensure");
     console.error(
       `[daemon] worker health check failed: ${reason}. Retrying in ${Math.ceil(delay / 1000)}s.`,
     );
@@ -501,6 +499,26 @@ function firstLine(value) {
   }
   const [line] = text.split(/\r?\n/, 1);
   return String(line ?? "").trim();
+}
+
+function formatRunCheckedFailureReason(result, label) {
+  const line = firstLine(result?.combinedOutput);
+  if (line) {
+    return line;
+  }
+
+  const spawnErrorCode = String(result?.spawnErrorCode ?? "")
+    .trim()
+    .toUpperCase();
+  if (spawnErrorCode) {
+    return `${label} failed to spawn (${spawnErrorCode})`;
+  }
+
+  if (typeof result?.status === "number") {
+    return `${label} exited with code ${result.status}`;
+  }
+
+  return `${label} exited with code unknown`;
 }
 
 function getErrorMessage(error) {

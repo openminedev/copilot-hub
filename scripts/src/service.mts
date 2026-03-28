@@ -4,13 +4,15 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { initializeCopilotHubLayout, resolveCopilotHubLayout } from "./install-layout.mjs";
+import { isManagedProcessRunning, normalizePid } from "./process-identity.mjs";
 import {
   buildWindowsHiddenLauncherCommand,
   ensureWindowsHiddenLauncher,
   getWindowsHiddenLauncherScriptPath,
+  getWindowsHiddenLauncherStopSignalPath,
   resolveWindowsScriptHost,
 } from "./windows-hidden-launcher.mjs";
 
@@ -21,13 +23,17 @@ const layout = resolveCopilotHubLayout({ repoRoot });
 initializeCopilotHubLayout({ repoRoot, layout });
 const nodeBin = process.execPath;
 const daemonScriptPath = path.join(repoRoot, "scripts", "dist", "daemon.mjs");
+const daemonStatePath = path.join(layout.runtimeDir, "pids", "daemon.json");
 const windowsLauncherScriptPath = getWindowsHiddenLauncherScriptPath(layout.runtimeDir);
+const windowsLauncherStopSignalPath = getWindowsHiddenLauncherStopSignalPath(layout.runtimeDir);
 
 const WINDOWS_TASK_NAME = "CopilotHub";
 const WINDOWS_RUN_KEY_PATH = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 const WINDOWS_RUN_VALUE_NAME = "CopilotHub";
 const LINUX_UNIT_NAME = "copilot-hub.service";
 const MACOS_LABEL = "com.copilot-hub.service";
+const WINDOWS_LAUNCHER_STOP_TIMEOUT_MS = 12_000;
+const WINDOWS_LAUNCHER_POLL_INTERVAL_MS = 250;
 
 const action = String(process.argv[2] ?? "status")
   .trim()
@@ -70,7 +76,7 @@ async function installService() {
   ensureDaemonScript();
 
   if (process.platform === "win32") {
-    const mode = installWindowsAutoStart();
+    const mode = await installWindowsAutoStart();
     if (mode === "task") {
       console.log("Service installed (Windows Task Scheduler).");
     } else {
@@ -96,7 +102,7 @@ async function installService() {
 
 async function uninstallService() {
   if (process.platform === "win32") {
-    const removed = uninstallWindowsAutoStart();
+    const removed = await uninstallWindowsAutoStart();
     if (!removed) {
       console.log("Service auto-start is already absent.");
       return;
@@ -141,7 +147,7 @@ async function showStatus() {
 
 async function startService() {
   if (process.platform === "win32") {
-    const mode = startWindowsAutoStart();
+    const mode = await startWindowsAutoStart();
     if (mode === "run-key") {
       console.log("Service started in background (Windows startup registry entry).");
     } else {
@@ -166,7 +172,7 @@ async function startService() {
 
 async function stopService() {
   if (process.platform === "win32") {
-    runDaemon("stop");
+    await stopWindowsAutoStart();
     return;
   }
 
@@ -184,7 +190,7 @@ async function stopService() {
   throw new Error(`Unsupported platform: ${process.platform}`);
 }
 
-function installWindowsAutoStart() {
+async function installWindowsAutoStart() {
   ensureCommandAvailable("schtasks", ["/?"], "Windows Task Scheduler is not available.");
   ensureCommandAvailable(
     "reg",
@@ -199,7 +205,8 @@ function installWindowsAutoStart() {
     { allowFailure: true },
   );
   if (taskCreate.ok) {
-    runWindowsTask();
+    clearWindowsLauncherStopRequest();
+    await ensureWindowsSessionRunning("task");
     return "task";
   }
 
@@ -208,18 +215,25 @@ function installWindowsAutoStart() {
   }
 
   installWindowsRunKey(command);
-  runWindowsHiddenLauncher();
+  clearWindowsLauncherStopRequest();
+  await ensureWindowsSessionRunning("run-key");
   return "run-key";
 }
 
-function uninstallWindowsAutoStart() {
+async function uninstallWindowsAutoStart() {
   ensureCommandAvailable("schtasks", ["/?"], "Windows Task Scheduler is not available.");
   ensureCommandAvailable(
     "reg",
     ["query", WINDOWS_RUN_KEY_PATH],
     "Windows registry tools are not available.",
   );
-  runDaemon("stop", { allowFailure: true });
+  requestWindowsLauncherStop();
+  try {
+    runDaemon("stop", { allowFailure: true });
+    await waitForWindowsLauncherStopAck();
+  } finally {
+    clearWindowsLauncherStopRequest();
+  }
 
   let removed = false;
 
@@ -296,12 +310,13 @@ function runWindowsTask() {
   }
 }
 
-function startWindowsAutoStart() {
+async function startWindowsAutoStart() {
   const command = buildWindowsLaunchCommand();
   const runKey = queryWindowsRunKey();
   if (runKey.installed) {
     installWindowsRunKey(command);
-    runWindowsHiddenLauncher();
+    clearWindowsLauncherStopRequest();
+    await ensureWindowsSessionRunning("run-key");
     return "run-key";
   }
   const task = queryWindowsTask();
@@ -309,7 +324,8 @@ function startWindowsAutoStart() {
     throw new Error("Service is not installed. Run 'copilot-hub service install' first.");
   }
   ensureTaskSchedulerAutoStart(command);
-  runWindowsTask();
+  clearWindowsLauncherStopRequest();
+  await ensureWindowsSessionRunning("task");
   return "task";
 }
 
@@ -562,12 +578,19 @@ function runWindowsHiddenLauncher() {
   if (!fs.existsSync(scriptHost)) {
     throw new Error("Windows Script Host is not available.");
   }
-  const result = runChecked(scriptHost, ["//B", "//Nologo", launcherScriptPath], {
-    allowFailure: true,
+  const child = spawn(scriptHost, ["//B", "//Nologo", launcherScriptPath], {
+    cwd: layout.runtimeDir,
+    detached: true,
+    stdio: "ignore",
+    windowsHide: true,
+    shell: false,
+    env: process.env,
   });
-  if (!result.ok) {
-    throw new Error(result.combinedOutput || "Failed to launch hidden Windows service starter.");
+  const pid = normalizePid(child?.pid);
+  if (pid <= 0) {
+    throw new Error("Failed to launch hidden Windows service starter.");
   }
+  child.unref();
 }
 
 function ensureSystemctl() {
@@ -594,6 +617,7 @@ function runDaemon(actionValue, { allowFailure = false } = {}) {
   if (!result.ok && !allowFailure) {
     throw new Error(result.combinedOutput || `Failed to execute daemon action '${actionValue}'.`);
   }
+  return result;
 }
 
 function runChecked(command, args, { stdio = "pipe", allowFailure = false } = {}) {
@@ -706,6 +730,171 @@ function ensureWindowsLauncherScript() {
     nodeBin,
     daemonScriptPath,
     runtimeDir: layout.runtimeDir,
+  });
+}
+
+async function ensureWindowsSessionRunning(mode) {
+  if (isWindowsHiddenLauncherRunning()) {
+    return;
+  }
+
+  if (mode === "task") {
+    runWindowsTask();
+  } else {
+    runWindowsHiddenLauncher();
+  }
+
+  const ready = await waitForWindowsSessionStart();
+  if (!ready) {
+    throw new Error("Windows background service did not start cleanly.");
+  }
+}
+
+async function stopWindowsAutoStart() {
+  requestWindowsLauncherStop();
+  try {
+    runDaemon("stop", { allowFailure: true });
+    await waitForWindowsLauncherStopAck();
+  } finally {
+    clearWindowsLauncherStopRequest();
+  }
+}
+
+async function waitForWindowsSessionStart(timeoutMs = WINDOWS_LAUNCHER_STOP_TIMEOUT_MS) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (getRunningDaemonPid() > 0 || isWindowsHiddenLauncherRunning()) {
+      return true;
+    }
+    await sleep(WINDOWS_LAUNCHER_POLL_INTERVAL_MS);
+  }
+  return getRunningDaemonPid() > 0 || isWindowsHiddenLauncherRunning();
+}
+
+async function waitForWindowsLauncherStopAck(timeoutMs = WINDOWS_LAUNCHER_STOP_TIMEOUT_MS) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const daemonRunning = getRunningDaemonPid() > 0;
+    const launcherRunning = isWindowsHiddenLauncherRunning();
+    const stopRequested = fs.existsSync(windowsLauncherStopSignalPath);
+    if (!daemonRunning && !launcherRunning && !stopRequested) {
+      return true;
+    }
+    await sleep(WINDOWS_LAUNCHER_POLL_INTERVAL_MS);
+  }
+  return getRunningDaemonPid() <= 0 && !isWindowsHiddenLauncherRunning();
+}
+
+function requestWindowsLauncherStop() {
+  fs.mkdirSync(path.dirname(windowsLauncherStopSignalPath), { recursive: true });
+  fs.writeFileSync(windowsLauncherStopSignalPath, `${new Date().toISOString()}\n`, "utf8");
+}
+
+function clearWindowsLauncherStopRequest() {
+  if (!fs.existsSync(windowsLauncherStopSignalPath)) {
+    return;
+  }
+  fs.rmSync(windowsLauncherStopSignalPath, { force: true });
+}
+
+function getRunningDaemonPid() {
+  const state = readManagedState(daemonStatePath);
+  const pid = normalizePid(state?.pid);
+  if (pid <= 0) {
+    return 0;
+  }
+  if (!isManagedProcessRunning(state)) {
+    try {
+      fs.rmSync(daemonStatePath, { force: true });
+    } catch {
+      // Best effort cleanup only.
+    }
+    return 0;
+  }
+  return pid;
+}
+
+function readManagedState(filePath) {
+  if (!fs.existsSync(filePath)) {
+    return null;
+  }
+  try {
+    const raw = fs.readFileSync(filePath, "utf8");
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function isWindowsHiddenLauncherRunning() {
+  return listWindowsHiddenLauncherPids().length > 0;
+}
+
+function listWindowsHiddenLauncherPids() {
+  if (process.platform !== "win32") {
+    return [];
+  }
+
+  const targetScriptPath = windowsLauncherScriptPath.toLowerCase();
+  const script = [
+    `$target = '${escapePowerShellSingleQuoted(targetScriptPath)}'`,
+    "$matches = @(Get-CimInstance Win32_Process -Filter \"Name = 'wscript.exe'\" -ErrorAction SilentlyContinue | Where-Object {",
+    "  $cmd = [string]$_.CommandLine",
+    "  -not [string]::IsNullOrWhiteSpace($cmd) -and $cmd.ToLower().Contains($target)",
+    "} | ForEach-Object { [int]$_.ProcessId })",
+    "$matches | ConvertTo-Json -Compress",
+  ].join("\n");
+
+  for (const shell of resolveWindowsPowerShellCandidates()) {
+    const result = spawnSync(
+      shell,
+      ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+      {
+        cwd: layout.runtimeDir,
+        shell: false,
+        windowsHide: true,
+        encoding: "utf8",
+        env: process.env,
+      },
+    );
+    if (result.error || result.status !== 0) {
+      continue;
+    }
+    return parsePidListJson(result.stdout);
+  }
+
+  return [];
+}
+
+function resolveWindowsPowerShellCandidates() {
+  const systemRoot = String(process.env.SystemRoot ?? process.env.SYSTEMROOT ?? "C:\\Windows");
+  return [
+    path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+    "powershell.exe",
+  ];
+}
+
+function parsePidListJson(value) {
+  const text = String(value ?? "").trim();
+  if (!text) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(text);
+    const values = Array.isArray(parsed) ? parsed : [parsed];
+    return values.map((entry) => normalizePid(entry)).filter((pid) => pid > 0);
+  } catch {
+    return [];
+  }
+}
+
+function escapePowerShellSingleQuoted(value) {
+  return String(value ?? "").replace(/'/g, "''");
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
   });
 }
 

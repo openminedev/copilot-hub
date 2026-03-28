@@ -1,7 +1,7 @@
 export const codexNpmPackage = "@openai/codex";
 export const minimumCodexVersion = "0.113.0";
-export const preferredCodexVersion = "0.116.0";
-export const maximumCodexVersionExclusive = "0.117.0";
+export const preferredCodexVersion = "0.117.0";
+export const maximumCodexVersionExclusive = "0.118.0";
 export const codexInstallPackageSpec = `${codexNpmPackage}@${preferredCodexVersion}`;
 export const codexVersionRequirementLabel = `>= ${minimumCodexVersion} < ${maximumCodexVersionExclusive}`;
 
