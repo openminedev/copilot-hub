@@ -561,11 +561,13 @@ export class TelegramChannel {
         return;
       }
 
-      void this.#processTurn({
-        chatId,
-        threadId,
-        prompt: text,
-      });
+      this.#runDetached("turn processing", () =>
+        this.#processTurn({
+          chatId,
+          threadId,
+          prompt: text,
+        }),
+      );
     });
 
     bot.catch((error) => {
@@ -617,7 +619,7 @@ export class TelegramChannel {
       const safe = sanitizeError(error);
       if (isTurnInterruptedError(safe)) {
         controlStatus = "Generation interrupted.";
-        await this.bot.api.sendMessage(chatId, "Generation stopped.");
+        await this.#sendMessageBestEffort(chatId, "Generation stopped.");
         return;
       }
       controlStatus = "Generation failed.";
@@ -625,10 +627,34 @@ export class TelegramChannel {
         runtime: this.runtime,
         safeError: safe,
       });
-      await this.bot.api.sendMessage(chatId, failureMessage);
+      await this.#sendMessageBestEffort(chatId, failureMessage);
     } finally {
       this.#clearActiveTurn(chatId, turnToken);
       await this.#closeTurnControls(chatId, turnToken, controlStatus);
+    }
+  }
+
+  #runDetached(label: string, operation: () => Promise<void>): void {
+    void operation().catch((error) => {
+      const details = sanitizeError(error);
+      this.error = details;
+      console.error(`[${this.runtime.runtimeId}:${this.id}] ${label} failed: ${details}`);
+    });
+  }
+
+  async #sendMessageBestEffort(chatId: string, text: string): Promise<void> {
+    if (!this.bot) {
+      return;
+    }
+
+    try {
+      await this.bot.api.sendMessage(chatId, text);
+    } catch (error) {
+      const details = sanitizeError(error);
+      this.error = details;
+      console.warn(
+        `[${this.runtime.runtimeId}:${this.id}] Telegram sendMessage failed while reporting turn status: ${details}`,
+      );
     }
   }
 
@@ -770,11 +796,13 @@ export class TelegramChannel {
       }
     }
 
-    void this.#processTurn({
-      chatId,
-      threadId,
-      prompt: nextPrompt,
-    });
+    this.#runDetached("turn processing", () =>
+      this.#processTurn({
+        chatId,
+        threadId,
+        prompt: nextPrompt,
+      }),
+    );
   }
 
   async #openTurnControls(chatId: string, threadId: string, token: string): Promise<void> {
@@ -810,7 +838,9 @@ export class TelegramChannel {
     }
 
     setTimeout(() => {
-      void this.#refreshTurnControlQuota(chatId, token, safeAttempt);
+      this.#runDetached("turn control quota refresh", () =>
+        this.#refreshTurnControlQuota(chatId, token, safeAttempt),
+      );
     }, 1500);
   }
 
