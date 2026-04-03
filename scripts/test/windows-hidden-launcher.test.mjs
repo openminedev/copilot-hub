@@ -7,6 +7,7 @@ import {
   buildWindowsHiddenLauncherCommand,
   buildWindowsHiddenLauncherContent,
   ensureWindowsHiddenLauncher,
+  getWindowsHiddenLauncherHaltSignalPath,
   getWindowsHiddenLauncherStopSignalPath,
   resolveWindowsScriptHost,
 } from "../dist/windows-hidden-launcher.mjs";
@@ -41,6 +42,7 @@ test("buildWindowsHiddenLauncherContent starts daemon in hidden mode", () => {
   assert.match(content, /WScript\.Sleep restartDelayMs/);
   assert.match(content, /"run"/);
   assert.match(content, /windows-daemon-launcher\.stop/);
+  assert.match(content, /windows-daemon-launcher\.halt/);
 });
 
 test("ensureWindowsHiddenLauncher writes and preserves launcher content", () => {
@@ -77,5 +79,15 @@ test("getWindowsHiddenLauncherStopSignalPath uses the runtime directory", () => 
   assert.equal(
     actual,
     "C:\\Users\\amine\\AppData\\Roaming\\copilot-hub\\runtime\\windows-daemon-launcher.stop",
+  );
+});
+
+test("getWindowsHiddenLauncherHaltSignalPath uses the runtime directory", () => {
+  const actual = getWindowsHiddenLauncherHaltSignalPath(
+    "C:\\Users\\amine\\AppData\\Roaming\\copilot-hub\\runtime",
+  );
+  assert.equal(
+    actual,
+    "C:\\Users\\amine\\AppData\\Roaming\\copilot-hub\\runtime\\windows-daemon-launcher.halt",
   );
 });

@@ -17,6 +17,10 @@ export function getWindowsHiddenLauncherStopSignalPath(runtimeDir: string): stri
   return path.win32.join(runtimeDir, "windows-daemon-launcher.stop");
 }
 
+export function getWindowsHiddenLauncherHaltSignalPath(runtimeDir: string): string {
+  return path.win32.join(runtimeDir, "windows-daemon-launcher.halt");
+}
+
 export function ensureWindowsHiddenLauncher({
   scriptPath,
   nodeBin,
@@ -68,14 +72,16 @@ export function buildWindowsHiddenLauncherContent({
 }): string {
   const command = buildWindowsCommandLine([nodeBin, daemonScriptPath, "run"]);
   const stopSignalPath = getWindowsHiddenLauncherStopSignalPath(runtimeDir);
+  const haltSignalPath = getWindowsHiddenLauncherHaltSignalPath(runtimeDir);
   return [
     "Option Explicit",
-    "Dim shell, fso, command, stopSignalPath, restartDelayMs",
+    "Dim shell, fso, command, stopSignalPath, haltSignalPath, restartDelayMs",
     'Set shell = CreateObject("WScript.Shell")',
     'Set fso = CreateObject("Scripting.FileSystemObject")',
     `shell.CurrentDirectory = "${escapeVbsString(runtimeDir)}"`,
     `command = "${escapeVbsString(command)}"`,
     `stopSignalPath = "${escapeVbsString(stopSignalPath)}"`,
+    `haltSignalPath = "${escapeVbsString(haltSignalPath)}"`,
     `restartDelayMs = ${String(WINDOWS_HIDDEN_LAUNCHER_RESTART_DELAY_MS)}`,
     "Do",
     "  If fso.FileExists(stopSignalPath) Then",
@@ -84,11 +90,17 @@ export function buildWindowsHiddenLauncherContent({
     "    On Error GoTo 0",
     "    Exit Do",
     "  End If",
+    "  If fso.FileExists(haltSignalPath) Then",
+    "    Exit Do",
+    "  End If",
     "  shell.Run command, 0, True",
     "  If fso.FileExists(stopSignalPath) Then",
     "    On Error Resume Next",
     "    fso.DeleteFile stopSignalPath, True",
     "    On Error GoTo 0",
+    "    Exit Do",
+    "  End If",
+    "  If fso.FileExists(haltSignalPath) Then",
     "    Exit Do",
     "  End If",
     "  WScript.Sleep restartDelayMs",

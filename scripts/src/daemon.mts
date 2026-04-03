@@ -14,6 +14,7 @@ import {
   resolveCodexBinForStart,
   resolveCompatibleInstalledCodexBin,
 } from "./codex-runtime.mjs";
+import { getWindowsHiddenLauncherHaltSignalPath } from "./windows-hidden-launcher.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -30,6 +31,7 @@ const lastStartupErrorPath = path.join(runtimeDir, "last-startup-error.json");
 const daemonLogPath = path.join(logsDir, "service-daemon.log");
 const controlPlaneLogPath = path.join(logsDir, "control-plane.log");
 const agentEngineLogPath = path.join(logsDir, "agent-engine.log");
+const windowsLauncherHaltSignalPath = getWindowsHiddenLauncherHaltSignalPath(runtimeDir);
 const daemonScriptPath = path.join(repoRoot, "scripts", "dist", "daemon.mjs");
 const supervisorScriptPath = path.join(repoRoot, "scripts", "dist", "supervisor.mjs");
 const nodeBin = process.execPath;
@@ -159,6 +161,7 @@ async function runDaemonLoop() {
     ensureCompatibleCodexForDaemon();
     clearLastStartupError();
   } catch (error) {
+    requestWindowsLauncherHalt();
     writeLastStartupError({
       detectedAt: new Date().toISOString(),
       reason: getErrorMessage(error),
@@ -193,6 +196,7 @@ async function runDaemonLoop() {
 
     const fatal = detectFatalStartupError(ensureResult);
     if (fatal) {
+      requestWindowsLauncherHalt();
       writeLastStartupError(fatal);
       console.error(`[daemon] fatal startup error: ${fatal.reason}`);
       console.error(`[daemon] action required: ${fatal.action}`);
@@ -662,6 +666,18 @@ function writeLastStartupError(value) {
   try {
     fs.mkdirSync(runtimeDir, { recursive: true });
     fs.writeFileSync(lastStartupErrorPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  } catch {
+    // Best effort only.
+  }
+}
+
+function requestWindowsLauncherHalt() {
+  if (process.platform !== "win32") {
+    return;
+  }
+  try {
+    fs.mkdirSync(path.dirname(windowsLauncherHaltSignalPath), { recursive: true });
+    fs.writeFileSync(windowsLauncherHaltSignalPath, `${new Date().toISOString()}\n`, "utf8");
   } catch {
     // Best effort only.
   }

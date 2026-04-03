@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { initializeCopilotHubLayout, resolveCopilotHubLayout } from "./install-layout.mjs";
 import { isManagedProcessRunning, normalizePid } from "./process-identity.mjs";
 import {
+  getWindowsHiddenLauncherHaltSignalPath,
   buildWindowsHiddenLauncherCommand,
   ensureWindowsHiddenLauncher,
   getWindowsHiddenLauncherScriptPath,
@@ -26,6 +27,7 @@ const daemonScriptPath = path.join(repoRoot, "scripts", "dist", "daemon.mjs");
 const daemonStatePath = path.join(layout.runtimeDir, "pids", "daemon.json");
 const windowsLauncherScriptPath = getWindowsHiddenLauncherScriptPath(layout.runtimeDir);
 const windowsLauncherStopSignalPath = getWindowsHiddenLauncherStopSignalPath(layout.runtimeDir);
+const windowsLauncherHaltSignalPath = getWindowsHiddenLauncherHaltSignalPath(layout.runtimeDir);
 
 const WINDOWS_TASK_NAME = "CopilotHub";
 const WINDOWS_RUN_KEY_PATH = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
@@ -205,6 +207,7 @@ async function installWindowsAutoStart() {
     { allowFailure: true },
   );
   if (taskCreate.ok) {
+    clearWindowsLauncherHaltRequest();
     clearWindowsLauncherStopRequest();
     await ensureWindowsSessionRunning("task");
     return "task";
@@ -215,6 +218,7 @@ async function installWindowsAutoStart() {
   }
 
   installWindowsRunKey(command);
+  clearWindowsLauncherHaltRequest();
   clearWindowsLauncherStopRequest();
   await ensureWindowsSessionRunning("run-key");
   return "run-key";
@@ -265,6 +269,7 @@ async function uninstallWindowsAutoStart() {
   if (fs.existsSync(windowsLauncherScriptPath)) {
     fs.rmSync(windowsLauncherScriptPath, { force: true });
   }
+  clearWindowsLauncherHaltRequest();
 
   return removed;
 }
@@ -315,6 +320,7 @@ async function startWindowsAutoStart() {
   const runKey = queryWindowsRunKey();
   if (runKey.installed) {
     installWindowsRunKey(command);
+    clearWindowsLauncherHaltRequest();
     clearWindowsLauncherStopRequest();
     await ensureWindowsSessionRunning("run-key");
     return "run-key";
@@ -324,6 +330,7 @@ async function startWindowsAutoStart() {
     throw new Error("Service is not installed. Run 'copilot-hub service install' first.");
   }
   ensureTaskSchedulerAutoStart(command);
+  clearWindowsLauncherHaltRequest();
   clearWindowsLauncherStopRequest();
   await ensureWindowsSessionRunning("task");
   return "task";
@@ -795,6 +802,13 @@ function clearWindowsLauncherStopRequest() {
     return;
   }
   fs.rmSync(windowsLauncherStopSignalPath, { force: true });
+}
+
+function clearWindowsLauncherHaltRequest() {
+  if (!fs.existsSync(windowsLauncherHaltSignalPath)) {
+    return;
+  }
+  fs.rmSync(windowsLauncherHaltSignalPath, { force: true });
 }
 
 function getRunningDaemonPid() {
