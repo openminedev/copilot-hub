@@ -1,6 +1,6 @@
 {
   "name": "copilot-hub",
-  "version": "0.1.36",
+  "version": "0.1.37",
   "description": "Copilot Hub CLI and runtime bundle",
   "license": "MIT",
   "repository": {
