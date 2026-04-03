@@ -50,10 +50,11 @@ jobs:
             exit 1
           fi
 
+      - name: Prepare npm for trusted publishing
+        run: npx --yes npm@11.12.1 --version
+
       - name: Publish (Trusted Publishing)
-        env:
-          NODE_AUTH_TOKEN: ""
-        run: npm publish --access public --provenance
+        run: npx --yes npm@11.12.1 publish --access public --provenance
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
